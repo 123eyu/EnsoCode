@@ -169,7 +169,13 @@ export const STATIC_PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   },
 ];
 
-/** 把运行时 OAuth 能力并入静态定义；自定义恒在最前，扩展 provider 接在其后。 */
+/**
+ * 把运行时 OAuth 能力并入静态定义；OpenAI 使用 Codex 登录，PI 原生登录独立展示。
+ * 卡片 ID 只用于向导导航，实际登录保留原始 provider ID，不改变已有凭证或模型绑定。
+ *
+ * Merge runtime OAuth capabilities into static definitions, routing OpenAI to Codex and showing PI login separately.
+ * Card IDs only drive wizard navigation; login keeps the original provider ID without changing existing credentials or model bindings.
+ */
 export function mergeProviderDefinitions(
   oauthProviders: readonly Pick<OauthProviderInfo, 'id' | 'name'>[]
 ): ProviderDefinition[] {
@@ -184,14 +190,21 @@ export function mergeProviderDefinitions(
 
   for (const oauth of oauthProviders) {
     if (!oauth.id) continue;
-    const existing = merged.get(oauth.id);
-    merged.set(oauth.id, {
+    const definitionId =
+      oauth.id === 'openai-codex' ? 'openai' : oauth.id === 'openai' ? 'openai-chatgpt' : oauth.id;
+    const existing = merged.get(definitionId);
+    const label =
+      oauth.id === 'openai-codex'
+        ? 'OpenAI'
+        : oauth.id === 'openai'
+          ? 'ChatGPT (PI login)'
+          : oauth.name || existing?.label || oauth.id;
+    merged.set(definitionId, {
       ...(existing ?? {
-        id: oauth.id,
-        label: oauth.name || oauth.id,
+        id: definitionId,
         supportsApiKey: false,
       }),
-      label: oauth.name || existing?.label || oauth.id,
+      label,
       oauthProviderId: oauth.id,
     });
   }
