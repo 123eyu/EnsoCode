@@ -71,5 +71,7 @@ it('describes auto-created board tasks only for group sessions', () => {
       groupTasks,
     }).find((tool) => tool.name === 'delegate')?.description ?? '';
   expect(describe(true)).toContain('Without taskId, a new board task is created');
+  expect(describe(true)).toContain('stays doing with the same assignee');
+  expect(describe(true)).not.toContain('on failure/cancel it returns to todo');
   expect(describe(false)).not.toContain('board task');
 });

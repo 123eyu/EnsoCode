@@ -806,11 +806,23 @@ describe('群任务看板 IPC', () => {
       { chatId, id, accept: 'yes' },
       { chatId, id, accept: false },
       { chatId, id, accept: false, reason: 'x'.repeat(4001) },
+      { chatId, id, accept: false, reason: 'redo', rework: 'yes' },
+      { chatId, id, accept: true, rework: true },
     ])
       expect(await call(IPC_CHANNELS.BOT_TASK_REVIEW, bad)).toEqual({
         ok: false,
         error: 'invalid',
       });
+    // 返工交给委派服务：这里的执行记录不在委派存储里，原样报错且任务不变
+    expect(
+      await call(IPC_CHANNELS.BOT_TASK_REVIEW, {
+        chatId,
+        id,
+        accept: false,
+        reason: 'redo',
+        rework: true,
+      })
+    ).toEqual({ ok: false, error: 'Delegation not found.' });
     expect(
       await call(IPC_CHANNELS.BOT_TASK_REVIEW, { chatId, id, accept: false, reason: 'redo' })
     ).toMatchObject({ ok: true, task: { status: 'todo', returnReason: 'redo' } });

@@ -1,10 +1,10 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { AgentWorkerEvent } from '../../../shared/types/agent';
+import type { AgentWorkerEvent, ProjectedMessage } from '../../../shared/types/agent';
 import { SourceAuthorityRegistry } from '../sourceAuthorityRegistry';
-import { BotSessionHost } from './botSessionHost';
+import { BotSessionHost, type BotSpawnSpec } from './botSessionHost';
 import { BotStore } from './botStore';
 import { BotChatStore } from './chatStore';
 import { turnDelegationTargets } from './delegationBatch';
@@ -28,7 +28,8 @@ const settle = async () => {
 function fixture(
   names = ['林经理', '阿后'],
   classifyMemberTask?: MemberTaskClassifier,
-  withTasks = false
+  withTasks = false,
+  sessionMessages?: (conversationId: string) => Promise<readonly ProjectedMessage[]>
 ) {
   const bots = new BotStore(join(root, 'bots'));
   // 全员只读：本文件只验证委派接力与回传，工作区写锁见 botSessionHost.lock.test
@@ -47,6 +48,8 @@ function fixture(
   })!;
   const authority = new SourceAuthorityRegistry({ registryFile: join(root, 'authority.json') });
   const prompts: Array<{ id: string; text: string; deliveryId?: string }> = [];
+  const spawned: BotSpawnSpec[] = [];
+  const released: string[] = [];
   const host = new BotSessionHost({
     bots,
     chats,
@@ -54,7 +57,10 @@ function fixture(
     emit: () => {},
     classifyMemberTask,
     runtime: {
-      spawn: async () => ({ ok: true }),
+      spawn: async (spec) => {
+        spawned.push(spec);
+        return { ok: true };
+      },
       prompt: (id, text, _images, deliveryId) => {
         prompts.push({ id, text, deliveryId });
         return { ok: true };
@@ -63,12 +69,19 @@ function fixture(
         prompts.push({ id, text, deliveryId });
         return { ok: true };
       },
-      release: async () => {},
+      retry: (id) => {
+        prompts.push({ id, text: '<retry>' });
+        return { ok: true };
+      },
+      release: async (id) => {
+        released.push(id);
+      },
       abort: () => {},
       removeSessionFiles: () => {},
     },
   });
   const store = new DelegationStore(join(root, 'bot-chats', 'delegations.jsonl'));
+  let current: DelegationService | undefined;
   const tasks = withTasks
     ? new GroupTaskService({
         store: new GroupTaskStore(join(root, 'bot-chats')),
@@ -76,6 +89,7 @@ function fixture(
         bots,
         emit: () => {},
         delegations: () => store.list(),
+        rework: (input) => current?.rework(input) ?? { ok: false as const, error: 'disabled' },
       })
     : undefined;
   const groups = new GroupChatService({
@@ -86,8 +100,8 @@ function fixture(
     delegatedTargets: (conversationId, turnKey) =>
       turnDelegationTargets(store.list(), conversationId, turnKey),
   });
-  const makeDelegations = () =>
-    new DelegationService({
+  const makeDelegations = () => {
+    current = new DelegationService({
       bots,
       chats,
       authority,
@@ -95,6 +109,7 @@ function fixture(
       store,
       emit: () => {},
       ...(tasks ? { tasks } : {}),
+      ...(sessionMessages ? { sessionMessages } : {}),
       deliverGroupResult: async (record, text, deliveryId) =>
         record.chatId &&
         chats.get(record.chatId)?.sessions[record.parentBotId]?.conversationId ===
@@ -105,6 +120,8 @@ function fixture(
             })
           : { ok: false, error: 'parent-session-changed' },
     });
+    return current;
+  };
   const delegations = makeDelegations();
   let index = 0;
   const observe = (sessionId: string, event: Record<string, unknown>) =>
@@ -131,7 +148,21 @@ function fixture(
   const child = (id: string) =>
     delegations.list().find((record) => record.id === id)!.childConversationId;
   const entries = () => chats.readEntries(chat.id, { limit: Number.MAX_SAFE_INTEGER });
+  /** 子会话已落盘（worker 报 ready 后才有 sessionFile） */
+  const persist = (conversationId: string) => {
+    const file = join(root, `${conversationId}.jsonl`);
+    writeFileSync(file, '{}\n');
+    authority.markReady(conversationId, file, { providerId: 'p', modelId: 'm' });
+    return file;
+  };
+  const fail = (id: string) => observe(id, { type: 'turn-failed', turnId: 'fail', error: 'boom' });
   return {
+    authority,
+    bots,
+    spawned,
+    released,
+    persist,
+    fail,
     lin: ids[0],
     hou: ids[1],
     ids,
@@ -441,6 +472,321 @@ it('深度 2 嵌套委派不建卡，只记进上层任务的 runs；重试不�
     trigger: 'retry',
   });
   expect(f.tasks?.list(f.chat.id)).toHaveLength(1);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+/** 群主一轮里派活给 to，执行人交付；子会话已落盘 */
+async function handOver(
+  f: ReturnType<typeof fixture>,
+  options: {
+    to?: string;
+    task?: string;
+    chatId?: string;
+    check?: { kind: 'output-contains'; text: string };
+  } = {}
+) {
+  const chatId = options.chatId ?? f.chat.id;
+  await f.groups.send(chatId, '安排一下', { deliveryId: `human-${Math.random()}` });
+  await settle();
+  const boss = f.chats.get(chatId)!.sessions[f.lin].conversationId;
+  f.start(boss);
+  const sent = f.delegations.delegate(boss, {
+    to: options.to ?? '阿后',
+    task: options.task ?? '修复登录页按钮',
+    ...(options.check ? { check: options.check } : {}),
+  });
+  if (!sent.ok) throw new Error(sent.error);
+  await settle();
+  const child = f.child(sent.delegationId);
+  f.persist(child);
+  f.start(child);
+  f.reply(boss, '已安排');
+  await settle();
+  return { boss, sent, child };
+}
+
+const latest = (f: ReturnType<typeof fixture>) => f.delegations.list().at(-1)!;
+const task1 = (f: ReturnType<typeof fixture>, chatId = f.chat.id) => f.tasks!.list(chatId)[0];
+
+it('退回返工：同一成员同一会话新开执行，只发增量 <delegation-task run= trigger=>，不挂 retryOf，交付后回到待验收', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { child } = await handOver(f);
+  f.reply(child, '改好了');
+  await settle();
+  expect(task1(f)).toMatchObject({ status: 'review', result: '改好了' });
+  expect(
+    f.tasks!.tool(f.chat.id, f.lin, {
+      action: 'reject',
+      id: '#1',
+      reason: '缺少单测',
+      rework: true,
+    })
+  ).toMatchObject({ ok: true, task: { status: 'doing', returnReason: '缺少单测' } });
+  const rework = latest(f);
+  expect(rework).toMatchObject({
+    trigger: 'rework',
+    childConversationId: child,
+    parentBotId: f.lin,
+    targetBotId: f.hou,
+    taskId: task1(f).id,
+  });
+  expect(rework).not.toHaveProperty('retryOf');
+  await settle();
+  const sent = f.to(child).at(-1)!;
+  expect(sent.deliveryId).toBe(rework.id);
+  expect(
+    sent.text.startsWith(
+      `<delegation-task id="${rework.id}" from="林经理" task="#1" run="2" trigger="rework">`
+    )
+  ).toBe(true);
+  expect(sent.text).toContain('缺少单测');
+  expect(sent.text).not.toContain('修复登录页按钮');
+  expect(sent.text).not.toContain('<previous-runs>');
+  f.start(child);
+  f.reply(child, '补了单测');
+  await settle();
+  expect(task1(f)).toMatchObject({
+    status: 'review',
+    result: '补了单测',
+    delegationId: rework.id,
+    sessions: { [f.hou]: child },
+    runs: [
+      { trigger: 'delegate', state: 'completed' },
+      { id: rework.id, trigger: 'rework', state: 'completed' },
+    ],
+  });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('隔离键：两个群同编号任务、同一成员不同任务各用各的子会话；返工只回到本任务的会话', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const other = f.chats.create({
+    kind: 'group',
+    title: '发布小组',
+    members: f.ids,
+    bossBotId: f.lin,
+    workspace: { kind: 'chat-home', projectId: 'home' },
+  })!;
+  const a = await handOver(f, { task: '同名任务' });
+  f.reply(a.child, 'A 好了');
+  await settle();
+  const b = await handOver(f, { task: '同名任务', chatId: other.id });
+  f.reply(b.child, 'B 好了');
+  await settle();
+  const c = await handOver(f, { task: '另一个任务' });
+  f.reply(c.child, 'C 好了');
+  await settle();
+  expect(a.sent.taskId).toBe('#1');
+  expect(b.sent.taskId).toBe('#1');
+  expect(c.sent.taskId).toBe('#2');
+  expect(new Set([a.child, b.child, c.child]).size).toBe(3);
+  f.tasks!.reject(other.id, 'human', '#1', '群二返工', true);
+  expect(latest(f)).toMatchObject({ childConversationId: b.child, chatId: other.id });
+  await settle();
+  f.start(b.child);
+  f.reply(b.child, 'B 再好了');
+  await settle();
+  f.tasks!.reject(f.chat.id, 'human', '#1', '群一返工', true);
+  expect(latest(f)).toMatchObject({ childConversationId: a.child, chatId: f.chat.id });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('群里点「新对话」后返工：仍接原任务会话，结果回到群主的新会话', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  f.reply(child, '改好了');
+  await settle();
+  f.start(boss);
+  f.reply(boss, '收到');
+  await settle();
+  f.delegations.startOver(f.chat.id);
+  f.host.resetSessions(f.chat.id);
+  expect(f.tasks!.reject(f.chat.id, 'human', '#1', '颜色不对', true)).toMatchObject({ ok: true });
+  const rework = latest(f);
+  const fresh = f.conversation(f.lin);
+  expect(fresh).not.toBe(boss);
+  expect(rework).toMatchObject({ childConversationId: child, parentConversationId: fresh });
+  await settle();
+  expect(f.to(child).at(-1)?.text).toContain('trigger="rework"');
+  f.start(child);
+  f.reply(child, '颜色改了');
+  await settle();
+  expect(f.to(fresh).at(-1)?.text).toContain(`<delegation-result id="${rework.id}"`);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('权限或工具变了：先释放空闲实例，再按原 jsonl 重新 spawn；没变不释放', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { child } = await handOver(f);
+  f.reply(child, '改好了');
+  await settle();
+  const file = f.authority.conversation(child)?.sessionFile;
+  const spawns = () => f.spawned.filter((spec) => spec.conversationId === child);
+  expect(spawns()).toHaveLength(1);
+  f.tasks!.reject(f.chat.id, 'human', '#1', '再看看', true);
+  await settle();
+  expect(f.released).not.toContain(child);
+  expect(spawns()).toHaveLength(1);
+  f.start(child);
+  f.reply(child, '看过了');
+  await settle();
+  const updated = f.bots.update(f.hou, { tools: 'all' }, []);
+  expect(updated.ok).toBe(true);
+  f.tasks!.reject(f.chat.id, 'human', '#1', '这回要改代码', true);
+  await settle();
+  expect(f.released).toContain(child);
+  expect(spawns()).toHaveLength(2);
+  expect(spawns()[1]).toMatchObject({ resumeFile: file, bot: { tools: 'all' } });
+  expect(f.to(child).at(-1)?.text).toContain('这回要改代码');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('会话不能复用（jsonl 被删）：开新会话并附 <previous-runs>，任务会话改指新会话', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { child } = await handOver(f);
+  f.reply(child, '按钮改成蓝色了');
+  await settle();
+  rmSync(f.authority.conversation(child)!.sessionFile!);
+  f.tasks!.reject(f.chat.id, 'human', '#1', '还要改 hover', true);
+  const rework = latest(f);
+  expect(rework.childConversationId).not.toBe(child);
+  expect(rework.trigger).toBe('rework');
+  await settle();
+  const text = f.to(rework.childConversationId).at(-1)!.text;
+  expect(text.startsWith(`<delegation-task id="${rework.id}" from="林经理">`)).toBe(true);
+  expect(text).toContain('还要改 hover');
+  expect(text).toContain('<previous-runs>');
+  expect(text).toContain('<request>修复登录页按钮</request>');
+  expect(text).toContain('<result>按钮改成蓝色了</result>');
+  expect(task1(f).sessions).toEqual({ [f.hou]: rework.childConversationId });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('执行失败：任务保留负责人；重试与群主再派同一成员都接原会话；改派他人开新会话带 <previous-runs>', async () => {
+  const f = fixture(['林经理', '阿后', '小三'], undefined, true);
+  const { boss, sent, child } = await handOver(f);
+  f.fail(child);
+  await settle();
+  expect(task1(f)).toMatchObject({
+    status: 'doing',
+    assigneeBotId: f.hou,
+    delegationId: sent.delegationId,
+    runs: [{ state: 'failed', failure: 'error' }],
+  });
+  // 界面重试：同一会话从断点续跑
+  const retried = f.delegations.retry(sent.delegationId);
+  if (!retried.ok) throw new Error(retried.error);
+  expect(retried.taskId).toBe('#1');
+  await settle();
+  expect(latest(f)).toMatchObject({
+    trigger: 'retry',
+    retryOf: sent.delegationId,
+    childConversationId: child,
+  });
+  expect(f.to(child).at(-1)?.text).toBe('<retry>');
+  expect(task1(f)).toMatchObject({ delegationId: retried.delegationId, assigneeBotId: f.hou });
+  f.start(child);
+  f.fail(child);
+  await settle();
+  // 群主自己再派给原执行人：同会话增量投递
+  f.start(boss);
+  const again = f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '换个思路' });
+  if (!again.ok) throw new Error(again.error);
+  await settle();
+  expect(latest(f)).toMatchObject({ trigger: 'retry', childConversationId: child });
+  expect(f.to(child).at(-1)?.text).toContain('task="#1" run="3" trigger="retry">\n换个思路');
+  f.start(child);
+  f.fail(child);
+  await settle();
+  // 改派：新成员新会话 + previous-runs，任务换负责人
+  const moved = f.delegations.delegate(boss, { to: '小三', taskId: '#1', task: '你来接手' });
+  if (!moved.ok) throw new Error(moved.error);
+  await settle();
+  const fresh = f.child(moved.delegationId);
+  expect(fresh).not.toBe(child);
+  expect(latest(f).trigger).toBe('delegate');
+  const text = f.to(fresh).at(-1)!.text;
+  expect(text).toContain('<previous-runs>');
+  expect(text).toContain('<request>换个思路</request>');
+  expect(task1(f)).toMatchObject({
+    assigneeBotId: f.ids[2],
+    delegationId: moved.delegationId,
+    sessions: { [f.hou]: child, [f.ids[2]]: fresh },
+  });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('验收只认本次执行开始之后的证据：返工不能借上一次执行的通过输出', async () => {
+  let messages: unknown[] = [];
+  const f = fixture(['林经理', '阿后'], undefined, true, async () => messages as never);
+  const check = { kind: 'output-contains' as const, text: 'XYZ_PASS' };
+  const { child } = await handOver(f, { check });
+  messages = [
+    {
+      role: 'toolResult',
+      toolCallId: 'a',
+      toolName: 'bash',
+      timestamp: Date.now(),
+      content: [{ type: 'text', text: 'XYZ_PASS' }],
+    },
+  ];
+  f.reply(child, '跑过了');
+  await settle();
+  expect(task1(f)).toMatchObject({ status: 'review', check: { passed: true } });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  f.tasks!.reject(f.chat.id, 'human', '#1', '再跑一遍', true);
+  const rework = latest(f);
+  expect(rework).not.toHaveProperty('retryOf');
+  await settle();
+  expect(f.to(child).at(-1)?.text).toContain('<acceptance-check>');
+  f.start(child);
+  f.reply(child, '没再跑');
+  await settle();
+  expect(f.delegations.list().find((record) => record.id === rework.id)).toMatchObject({
+    state: 'failed',
+    failure: 'check',
+  });
+  expect(task1(f)).toMatchObject({
+    status: 'doing',
+    assigneeBotId: f.hou,
+    delegationId: rework.id,
+  });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('执行失败后群里开了新对话：界面重试仍接原任务会话，结果回群主的新会话', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, sent, child } = await handOver(f);
+  f.fail(child);
+  await settle();
+  f.start(boss);
+  f.reply(boss, '收到失败');
+  await settle();
+  f.delegations.startOver(f.chat.id);
+  f.host.resetSessions(f.chat.id);
+  const retried = f.delegations.retry(sent.delegationId);
+  if (!retried.ok) throw new Error(retried.error);
+  const fresh = f.conversation(f.lin);
+  expect(fresh).not.toBe(boss);
+  expect(latest(f)).toMatchObject({
+    childConversationId: child,
+    parentConversationId: fresh,
+    retryOf: sent.delegationId,
+  });
+  await settle();
+  f.start(child);
+  f.reply(child, '这次好了');
+  await settle();
+  expect(task1(f)).toMatchObject({ status: 'review', assigneeBotId: f.hou });
+  expect(f.to(fresh).at(-1)?.text).toContain(`<delegation-result id="${retried.delegationId}"`);
   f.delegations.dispose();
   f.groups.dispose();
 });

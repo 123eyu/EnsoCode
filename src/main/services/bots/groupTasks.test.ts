@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Delegation, GroupTask } from '../../../shared/types/bot';
+import type { Delegation, GroupTask, GroupTaskRun } from '../../../shared/types/bot';
 import { BotStore } from './botStore';
 import { BotChatStore } from './chatStore';
 import { GroupTaskStore } from './groupTaskStore';
@@ -18,6 +18,10 @@ let chatId: string;
 const emit = vi.fn();
 const send = vi.fn(async (_chatId: string, _text: string) => ({ ok: true as const }));
 const cancelDelegation = vi.fn();
+const rework = vi.fn(
+  (_input: { chatId: string; delegationId: string; actor: string; reason: string }) =>
+    ({ ok: true }) as { ok: true } | { ok: false; error: string }
+);
 let legacy: Delegation[] = [];
 let outputs: Array<{
   role: string;
@@ -62,6 +66,8 @@ beforeEach(() => {
   emit.mockClear();
   send.mockClear();
   cancelDelegation.mockClear();
+  rework.mockReset();
+  rework.mockReturnValue({ ok: true });
   outputs = [];
   legacy = [];
   sessionMessages.mockClear();
@@ -74,6 +80,7 @@ beforeEach(() => {
     cancelDelegation,
     sessionMessages,
     delegations: () => legacy,
+    rework,
   });
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -252,7 +259,7 @@ describe('验收条件 check', () => {
     ).toMatchObject({ ok: false });
   });
 
-  it('关联委派随验收流转：通过 → review 记通过；未通过 → 退回 todo，result 记原因', () => {
+  it('关联委派随验收流转：通过 → review 记通过；未通过 → 仍由执行人负责，result 记原因', () => {
     const task = { ...todo, check };
     const linked = taskAfterDelegation(task, delegation({ check }), 5)!;
     expect(
@@ -274,11 +281,16 @@ describe('验收条件 check', () => {
       9
     )!;
     expect(back).toMatchObject({
-      status: 'todo',
+      status: 'doing',
+      assigneeBotId: delegation().targetBotId,
+      delegationId: DELEGATION,
       result: '验收未通过：未在工具输出中看到「XYZ_PASS」',
       check: { ...check, passed: false },
     });
-    expect(taskAfterDelegation(back, delegation({ id: 'next', check }), 10)?.check).toEqual(check);
+    const stuck = { ...back, runs: [failedRun()] };
+    expect(
+      taskAfterDelegation(stuck, delegation({ id: 'next', check, trigger: 'retry' }), 10)?.check
+    ).toEqual(check);
   });
 
   it('gate 带出任务的验收条件', () => {
@@ -390,6 +402,15 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
   taskId: '55555555-5555-4555-8555-555555555555',
   ...over,
 });
+const failedRun = (over: Partial<GroupTaskRun> = {}): GroupTaskRun => ({
+  id: DELEGATION,
+  botId: delegation().targetBotId,
+  trigger: 'delegate',
+  state: 'failed',
+  failure: 'timeout',
+  createdAt: 1,
+  ...over,
+});
 const todo: GroupTask = {
   id: '55555555-5555-4555-8555-555555555555',
   seq: 3,
@@ -425,7 +446,7 @@ describe('委派联动状态机 taskAfterDelegation', () => {
     expect(taskAfterDelegation(todo, delegation({ taskId: 'other' }), 5)).toBeUndefined();
   });
 
-  it('委派完成：执行人不是创建人 → review 保留负责人与委派；失败 / 取消 → 退回 todo 清负责人', () => {
+  it('委派完成：执行人不是创建人 → review 保留负责人与委派；失败保留负责人；取消 → 退回 todo 清负责人', () => {
     const linked = taskAfterDelegation(todo, delegation(), 5)!;
     expect(
       taskAfterDelegation(linked, delegation({ state: 'completed', result: 'all good' }), 9)
@@ -436,12 +457,19 @@ describe('委派联动状态机 taskAfterDelegation', () => {
       delegationId: DELEGATION,
       updatedAt: 9,
     });
-    for (const state of ['failed', 'canceled'] as const) {
-      const back = taskAfterDelegation(linked, delegation({ state }), 9)!;
-      expect(back).toMatchObject({ status: 'todo', updatedAt: 9 });
-      expect(back).not.toHaveProperty('assigneeBotId');
-      expect(back).not.toHaveProperty('delegationId');
-    }
+    for (const failure of ['timeout', 'interrupted', 'denied', 'error'] as const)
+      expect(
+        taskAfterDelegation(linked, delegation({ state: 'failed', failure }), 9)
+      ).toMatchObject({
+        status: 'doing',
+        assigneeBotId: delegation().targetBotId,
+        delegationId: DELEGATION,
+        updatedAt: 9,
+      });
+    const back = taskAfterDelegation(linked, delegation({ state: 'canceled' }), 9)!;
+    expect(back).toMatchObject({ status: 'todo', updatedAt: 9 });
+    expect(back).not.toHaveProperty('assigneeBotId');
+    expect(back).not.toHaveProperty('delegationId');
     expect(
       taskAfterDelegation({ ...linked, status: 'canceled' }, delegation({ state: 'failed' }), 9)
     ).toBeUndefined();
@@ -819,5 +847,215 @@ describe('执行记录 runs / sessions', () => {
     ).toEqual([runId(3), runId(1), runId(4)]);
     added('Empty');
     expect(service.list(chatId)[1]).not.toHaveProperty('runs');
+  });
+});
+
+describe('会话延续：续跑闸门、失败保留负责人、退回返工', () => {
+  const runId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  /** alice 建卡并委派给 bob，执行到 state；子会话 child-bob */
+  const handed = (state: 'failed' | 'completed', over: Partial<Delegation> = {}) => {
+    const task = added('Login page', alice);
+    const record = delegation({
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+      childConversationId: 'child-bob',
+    });
+    legacy = [record];
+    service.sync(record);
+    const done = {
+      ...record,
+      state,
+      ...(state === 'failed' ? { failure: 'timeout' as const } : { result: 'shipped' }),
+      ...over,
+    };
+    legacy = [done];
+    service.sync(done);
+    return { task, record: done };
+  };
+
+  it('执行失败：任务仍由执行人负责、保留会话，时间线写失败原因；list 带出失败原因', () => {
+    handed('failed');
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'doing',
+      assigneeBotId: bob,
+      delegationId: DELEGATION,
+      sessions: { [bob]: 'child-bob' },
+      runs: [{ id: DELEGATION, state: 'failed', failure: 'timeout' }],
+    });
+    expect(systemTexts().at(-1)).toBe('#1 Login page 执行失败：超时，仍由 Bob 负责，可重试或改派');
+    expect(service.tool(chatId, alice, { action: 'list' })).toMatchObject({
+      tasks: [{ id: '#1', status: 'doing', assignee: 'Bob', failure: 'timeout' }],
+    });
+  });
+
+  it('失败后的闸门：原执行人续跑同一会话（retry）；委派人改派他人开新执行；无关成员拒绝', () => {
+    const { task } = handed('failed');
+    expect(service.gate(chatId, '#1', alice, bob)).toEqual({
+      ok: true,
+      taskId: task.id,
+      seq: 1,
+      trigger: 'retry',
+      session: 'child-bob',
+    });
+    expect(service.gate(chatId, '#1', alice, alice)).toEqual({ ok: true, taskId: task.id, seq: 1 });
+    const c = bots.create({ name: 'Carol' }, []);
+    if (!c.ok) throw new Error('bot');
+    chats.update(chatId, (draft) => ({ ...draft, members: [...draft.members, c.bot.id] }));
+    expect(service.gate(chatId, '#1', c.bot.id, bob)).toEqual({
+      ok: false,
+      error: 'Task #1 is already delegated to Bob.',
+    });
+    // 新执行挂上任务：失败的执行不再挡
+    service.sync(
+      delegation({
+        id: runId(2),
+        chatId,
+        parentBotId: alice,
+        targetBotId: bob,
+        taskId: task.id,
+        childConversationId: 'child-bob',
+        trigger: 'retry',
+      })
+    );
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'doing',
+      assigneeBotId: bob,
+      delegationId: runId(2),
+    });
+    expect(systemTexts().at(-1)).toBe('Alice 让 Bob 重试 #1 Login page');
+  });
+
+  it('失败的任务：创建人可取消，人可改派给别人（清掉失败的执行）', async () => {
+    handed('failed');
+    expect(service.cancel(chatId, alice, '#1')).toMatchObject({ ok: true });
+    handed('failed');
+    expect(await service.assign(chatId, '#2', alice)).toMatchObject({
+      ok: true,
+      task: { status: 'doing', assigneeBotId: alice },
+    });
+    expect(store().find(chatId, '#2')).not.toHaveProperty('delegationId');
+  });
+
+  it('待验收的闸门：创建人 / 委派人给原执行人追加 → 同会话 append；给别人或旁人拒绝', () => {
+    const { task } = handed('completed');
+    expect(service.gate(chatId, '#1', alice, bob)).toEqual({
+      ok: true,
+      taskId: task.id,
+      seq: 1,
+      trigger: 'append',
+      session: 'child-bob',
+    });
+    expect(service.gate(chatId, '#1', alice, alice)).toEqual({
+      ok: false,
+      error: 'Task #1 is awaiting review by Alice.',
+    });
+    expect(service.gate(chatId, '#1', bob, bob)).toMatchObject({ ok: false });
+    service.sync(
+      delegation({
+        id: runId(2),
+        chatId,
+        parentBotId: alice,
+        targetBotId: bob,
+        taskId: task.id,
+        childConversationId: 'child-bob',
+        trigger: 'append',
+      })
+    );
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'doing',
+      delegationId: runId(2),
+      result: 'shipped',
+    });
+  });
+
+  it('退回待办后再委派同一成员：带出该成员在本任务的会话与退回理由；别的成员没有会话', () => {
+    const { task } = handed('completed');
+    service.reject(chatId, alice, '#1', '缺测试');
+    expect(service.gate(chatId, '#1', alice, bob)).toEqual({
+      ok: true,
+      taskId: task.id,
+      seq: 1,
+      session: 'child-bob',
+      returnReason: '缺测试',
+    });
+    expect(service.gate(chatId, '#1', alice, alice)).toEqual({
+      ok: true,
+      taskId: task.id,
+      seq: 1,
+      returnReason: '缺测试',
+    });
+  });
+
+  it('旧任务没有 sessions：回退到本任务该成员最近一条执行的子会话', () => {
+    const { task } = handed('failed');
+    const { sessions: _sessions, ...rest } = store().find(chatId, '#1')!;
+    store().save(chatId, rest);
+    legacy = [
+      delegation({ ...legacy[0], childConversationId: 'old' }),
+      delegation({
+        ...legacy[0],
+        id: runId(2),
+        childConversationId: 'newer',
+        createdAt: 5,
+        state: 'failed',
+      }),
+      delegation({
+        ...legacy[0],
+        id: runId(3),
+        taskId: runId(9),
+        childConversationId: 'x',
+        createdAt: 9,
+      }),
+    ];
+    expect(service.gate(chatId, '#1', alice, bob)).toMatchObject({ session: 'newer' });
+    expect(task.id).toBeTruthy();
+  });
+
+  it('reject rework：交给委派服务在原会话返工，记退回理由；不带 rework 维持退回待办', () => {
+    handed('completed');
+    rework.mockImplementationOnce((input) => {
+      service.sync(
+        delegation({
+          id: runId(2),
+          chatId,
+          parentBotId: alice,
+          targetBotId: bob,
+          taskId: store().find(chatId, '#1')!.id,
+          childConversationId: 'child-bob',
+          trigger: 'rework',
+          task: input.reason,
+        })
+      );
+      return { ok: true };
+    });
+    expect(
+      service.tool(chatId, alice, { action: 'reject', id: '#1', reason: '缺测试', rework: true })
+    ).toMatchObject({
+      ok: true,
+      task: { id: '#1', status: 'doing', assignee: 'Bob', returnReason: '缺测试' },
+    });
+    expect(rework).toHaveBeenCalledWith({
+      chatId,
+      delegationId: DELEGATION,
+      actor: alice,
+      reason: '缺测试',
+    });
+    expect(store().find(chatId, '#1')).toMatchObject({ delegationId: runId(2) });
+    expect(systemTexts().at(-1)).toBe('Alice 退回了 #1 Login page，让 Bob 返工：缺测试');
+  });
+
+  it('reject rework 失败时任务不变；执行人不能让自己返工', () => {
+    handed('completed');
+    rework.mockReturnValueOnce({ ok: false, error: 'Delegation workspace unavailable.' });
+    expect(service.reject(chatId, 'human', '#1', 'redo', true)).toEqual({
+      ok: false,
+      error: 'Delegation workspace unavailable.',
+    });
+    expect(store().find(chatId, '#1')).toMatchObject({ status: 'review' });
+    expect(store().find(chatId, '#1')).not.toHaveProperty('returnReason');
+    expect(service.reject(chatId, bob, '#1', 'redo', true)).toMatchObject({ ok: false });
+    expect(rework).toHaveBeenCalledTimes(1);
   });
 });

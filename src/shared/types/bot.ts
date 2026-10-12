@@ -838,6 +838,13 @@ export interface GroupTask {
   updatedAt: number;
 }
 
+/** 任务当前挂的执行已失败：仍由执行人负责，只能重试、改派或取消 */
+export function stalledTaskRun(task: GroupTask): GroupTaskRun | undefined {
+  if (task.status !== 'doing' || !task.delegationId) return undefined;
+  const run = task.runs?.find((item) => item.id === task.delegationId);
+  return run?.state === 'failed' ? run : undefined;
+}
+
 export const TASK_CHECK_TEXT_MAX = 200;
 
 /** 可验证完成条件：工具最终输出里包含 text */

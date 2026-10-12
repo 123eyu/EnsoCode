@@ -3,9 +3,11 @@ import { existsSync } from 'node:fs';
 import { checkFailureText, checkPassed } from '../../../shared/bots/taskCheck';
 import type { ProjectedMessage } from '../../../shared/types/agent';
 import {
+  type BotPermissions,
   botNameKey,
   DELEGATION_TIMEOUT_MINUTES,
   type Delegation,
+  type DelegationTrigger,
   type TaskCheck,
 } from '../../../shared/types/bot';
 import type { BotEvent, BotSendResult } from '../../../shared/types/botIpc';
@@ -24,6 +26,8 @@ import {
 } from './delegationBatch';
 import { delegatedBotPermissions, delegationPolicy } from './delegationPolicy';
 import type { DelegationStore } from './delegationStore';
+import type { TaskGate } from './groupTasks';
+import { previousRunsText } from './previousRuns';
 import { rewoundDelegations } from './rewind';
 
 interface Deps {
@@ -37,11 +41,7 @@ interface Deps {
   minuteMs?: number;
   /** 群任务看板联动：taskId 校验、自动建卡与每次落盘后的状态同步 */
   tasks?: {
-    gate(
-      chatId: string | null,
-      ref: string,
-      parentBotId: string
-    ): { ok: true; taskId: string; seq: number; check?: TaskCheck } | { ok: false; error: string };
+    gate(chatId: string | null, ref: string, parentBotId: string, targetBotId?: string): TaskGate;
     open(
       chatId: string,
       botId: string,
@@ -85,6 +85,20 @@ interface Resume {
   /** 验收没过：在原会话补一条未通过原因，而不是从最后一步续跑 */
   checkFailed: boolean;
 }
+
+/** 投递任务时的看板信息：#N、是否接着原会话、改派时带的退回理由 */
+interface TaskInfo {
+  seq?: number;
+  incremental?: boolean;
+  returnReason?: string;
+}
+
+const samePermissions = (a: BotPermissions | undefined, b: BotPermissions) =>
+  !!a &&
+  a.tools === b.tools &&
+  a.approvalMode === b.approvalMode &&
+  [...a.skillIds].sort().join('\n') === [...b.skillIds].sort().join('\n') &&
+  [...a.mcpServerIds].sort().join('\n') === [...b.mcpServerIds].sort().join('\n');
 
 export class DelegationService {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -155,9 +169,9 @@ export class DelegationService {
     const ids = new Set<string>();
     for (let item: Delegation | undefined = record; item && !ids.has(item.parentBotId); ) {
       ids.add(item.parentBotId);
-      const above: string | undefined = this.deps.authority.conversation(item.parentConversationId)
-        ?.bot?.delegationId;
-      item = above ? this.deps.store.get(above) : undefined;
+      item = this.deps.authority.conversation(item.parentConversationId)?.bot?.delegationId
+        ? this.executionOf(item.parentConversationId)
+        : undefined;
     }
     return ids;
   }
@@ -166,7 +180,14 @@ export class DelegationService {
   delegate(
     parentConversationId: string,
     input: DelegateInput,
-    options: { standalone?: boolean; retryOf?: string; resume?: Resume } = {}
+    options: {
+      standalone?: boolean;
+      retryOf?: string;
+      resume?: Resume;
+      trigger?: DelegationTrigger;
+      /** 不续用任务会话（手动「从头重试」） */
+      fresh?: boolean;
+    } = {}
   ): DelegateResult {
     if (this.disposed) return { ok: false, error: 'disabled' };
     const conversation = this.deps.authority.conversation(parentConversationId);
@@ -183,8 +204,10 @@ export class DelegationService {
       return { ok: false, error: 'deadlineMinutes must be a positive number.' };
     const limit = target.delegationTimeoutMinutes ?? DELEGATION_TIMEOUT_MINUTES;
     const timeoutMinutes = Math.min(deadline ?? limit, limit);
-    const ancestor =
-      conversation.bot.delegationId && this.deps.store.get(conversation.bot.delegationId);
+    // 子会话可能先后挂多次执行：按最新一次算祖先
+    const ancestor = conversation.bot.delegationId
+      ? this.executionOf(parentConversationId)
+      : undefined;
     if (conversation.bot.delegationId && !ancestor)
       return { ok: false, error: 'Parent delegation record unavailable.' };
     if (ancestor) {
@@ -218,11 +241,11 @@ export class DelegationService {
       chat?.kind === 'group' ? chat.members : undefined
     );
     if (error) return { ok: false, error };
-    let task: { taskId: string; seq: number } | undefined;
+    let task: Omit<Extract<TaskGate, { ok: true }>, 'ok'> | undefined;
     let opened = false;
     let check = input.check;
     if (input.taskId !== undefined) {
-      const gate = this.deps.tasks?.gate(chatId, input.taskId, parent.id) ?? {
+      const gate = this.deps.tasks?.gate(chatId, input.taskId, parent.id, target.id) ?? {
         ok: false as const,
         error: 'Tasks are only available in group chats.',
       };
@@ -243,10 +266,36 @@ export class DelegationService {
     const id = randomUUID();
     const batchId = options.standalone ? undefined : this.deps.host.turnKey(parentConversationId);
     const projectId = conversation.projectId;
-    const child = options.resume
-      ? this.deps.authority.conversation(options.resume.conversationId)
+    // 同一任务同一成员才续会话：会话由看板按任务真实 id + 成员给出，这里再核对归属与可用性
+    const reuse =
+      !options.resume &&
+      !options.fresh &&
+      task?.session &&
+      this.reusable(task.session, target.id, projectId, task.taskId)
+        ? task.session
+        : undefined;
+    const continued = options.resume?.conversationId ?? reuse;
+    const child = continued
+      ? this.deps.authority.conversation(continued)
       : this.newChild(projectId, target.id, id);
     const effective = delegatedBotPermissions(parent, target);
+    const permissions: BotPermissions = {
+      tools: effective.tools,
+      approvalMode: effective.approvalMode,
+      skillIds: effective.skillIds,
+      mcpServerIds: effective.mcpServerIds,
+    };
+    const previous = continued ? this.executionOf(continued) : undefined;
+    const respawn =
+      previous !== undefined && !samePermissions(previous.effectivePermissions, permissions);
+    const trigger: DelegationTrigger =
+      options.trigger ?? (options.retryOf ? 'retry' : (task?.trigger ?? 'delegate'));
+    // 群主再派给失败的原执行人：就是对那次失败执行的重试
+    const retryOf =
+      options.retryOf ??
+      (trigger === 'retry' && previous?.state === 'failed' && previous.taskId === taskId
+        ? previous.id
+        : undefined);
     const origin = { parentConversationId, chatId };
     if (!child || !this.deps.host.registerDelegation(child.conversationId, effective, origin)) {
       if (opened && chatId && taskId) this.deps.tasks?.discard(chatId, taskId);
@@ -264,30 +313,36 @@ export class DelegationService {
       state: 'queued',
       depth,
       createdAt: Date.now(),
-      effectivePermissions: {
-        tools: effective.tools,
-        approvalMode: effective.approvalMode,
-        skillIds: effective.skillIds,
-        mcpServerIds: effective.mcpServerIds,
-      },
+      effectivePermissions: permissions,
       ...(batchId ? { batchId } : {}),
       ...(taskId ? { taskId } : {}),
-      ...(options.retryOf ? { retryOf: options.retryOf } : {}),
+      // 返工 / 追加不挂 retryOf：验收只认本次执行开始后的证据
+      ...(retryOf ? { retryOf } : {}),
       ...(input.keep ? { keep: true } : {}),
       ...(check ? { check: { kind: check.kind, text: check.text } } : {}),
       timeoutMinutes,
-      trigger: options.retryOf ? 'retry' : 'delegate',
+      trigger,
     };
     this.save(record);
+    const info: TaskInfo = {
+      ...(task ? { seq: task.seq } : {}),
+      ...(reuse ? { incremental: true } : {}),
+      ...(task?.returnReason && trigger === 'delegate' ? { returnReason: task.returnReason } : {}),
+    };
     const freshChild = () => {
       const fresh = this.newChild(projectId, target.id, id);
       return fresh && this.deps.host.registerDelegation(fresh.conversationId, effective, origin)
         ? fresh.conversationId
         : undefined;
     };
-    const sending = options.resume
-      ? this.resume(record, options.resume, freshChild, parent.name)
-      : this.sendTask(record, parent.name);
+    // 权限或工具变了：先释放空闲实例，下次开工按新配置和原 jsonl 重新 spawn（不走停止）
+    const ready =
+      respawn && continued ? this.deps.host.releaseIdle(continued) : Promise.resolve(false);
+    const sending = ready.then(() =>
+      options.resume
+        ? this.resume(record, options.resume, freshChild, parent.name, info)
+        : this.sendTask(record, parent.name, info)
+    );
     void sending
       .then((sent) => {
         const current = this.deps.store.get(id);
@@ -326,11 +381,67 @@ export class DelegationService {
     });
   }
 
-  private sendTask(record: Delegation, from: string): Promise<BotDeliverResult> {
+  /** 子会话当前（最新）一次执行；会话绑定的 delegationId 只是第一次 */
+  executionOf(childConversationId: string): Delegation | undefined {
+    let latest: Delegation | undefined;
+    for (const record of this.deps.store.list())
+      if (
+        record.childConversationId === childConversationId &&
+        (!latest || record.createdAt >= latest.createdAt)
+      )
+        latest = record;
+    return latest;
+  }
+
+  /** 任务会话可续：未结束、成员与项目一致、最近一次执行属于本任务且已结束、jsonl 还在 */
+  private reusable(conversationId: string, botId: string, projectId: string, taskId: string) {
+    const child = this.deps.authority.conversation(conversationId);
+    const last = this.executionOf(conversationId);
+    const file = child?.sessionFile;
+    return (
+      !!child &&
+      child.lifecycle !== 'ended' &&
+      child.projectId === projectId &&
+      child.bot?.botId === botId &&
+      !!child.bot.delegationId &&
+      last?.taskId === taskId &&
+      last.depth === 1 &&
+      !active(last) &&
+      !!file &&
+      existsSync(file)
+    );
+  }
+
+  /** 任务的历次执行（深度 1），按发起先后 */
+  private taskRuns(taskId: string): Delegation[] {
+    return this.deps.store
+      .list()
+      .filter((record) => record.taskId === taskId && record.depth === 1)
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** 续用会话只发增量；新会话发完整任务，任务有历次执行时附 <previous-runs> */
+  private sendTask(
+    record: Delegation,
+    from: string,
+    info: TaskInfo = {}
+  ): Promise<BotDeliverResult> {
     const acceptance = record.check
       ? `\n<acceptance-check>Passes only if one of your final tool outputs (e.g. a command's output) contains: ${escapeXml(record.check.text)}</acceptance-check>`
       : '';
-    const text = `<delegation-task id="${record.id}" from="${escapeXml(from)}">\n${escapeXml(record.task)}\n<context>${escapeXml(record.context)}</context>${acceptance}\n</delegation-task>`;
+    const runs = record.taskId ? this.taskRuns(record.taskId) : [];
+    const index = runs.findIndex((item) => item.id === record.id);
+    let text: string;
+    if (info.incremental && info.seq !== undefined && index >= 0) {
+      const context = record.context ? `\n<context>${escapeXml(record.context)}</context>` : '';
+      text = `<delegation-task id="${record.id}" from="${escapeXml(from)}" task="#${info.seq}" run="${index + 1}" trigger="${record.trigger ?? 'delegate'}">\n${escapeXml(record.task)}${context}${acceptance}\n</delegation-task>`;
+    } else {
+      const previous = previousRunsText(index >= 0 ? runs.slice(0, index) : [], {
+        name: (id) => this.deps.bots.get(id)?.name ?? id,
+        ...(info.returnReason ? { returnReason: info.returnReason } : {}),
+      });
+      text = `<delegation-task id="${record.id}" from="${escapeXml(from)}">\n${escapeXml(record.task)}\n<context>${escapeXml(record.context)}</context>${acceptance}${previous ? `\n${previous}` : ''}\n</delegation-task>`;
+    }
     return this.deps.host.deliverConversation(record.childConversationId, text, {
       deliveryId: record.id,
       queueIfBusy: true,
@@ -343,7 +454,8 @@ export class DelegationService {
     record: Delegation,
     resume: Resume,
     freshChild: () => string | undefined,
-    from: string
+    from: string,
+    info: TaskInfo
   ): Promise<BotDeliverResult> {
     const sent =
       resume.checkFailed && record.check
@@ -360,7 +472,7 @@ export class DelegationService {
     if (!conversationId) return { ok: false, error: 'Delegation workspace unavailable.' };
     const fresh = { ...current, childConversationId: conversationId };
     this.save(fresh);
-    return this.sendTask(fresh, from);
+    return this.sendTask(fresh, from, { ...info, incremental: false });
   }
 
   check(parentConversationId: string, input: { id?: string; cancel?: boolean }): unknown {
@@ -411,7 +523,8 @@ export class DelegationService {
       return { ok: false, error: 'This delegation has already been retried.' };
     // 任务仍空闲（已退回待办）时沿用关联；已完成 / 取消 / 被别人接手则不再绑定
     const taskId =
-      record.taskId && this.deps.tasks?.gate(record.chatId, record.taskId, record.parentBotId).ok
+      record.taskId &&
+      this.deps.tasks?.gate(record.chatId, record.taskId, record.parentBotId, record.targetBotId).ok
         ? record.taskId
         : undefined;
     const child = this.deps.authority.conversation(record.childConversationId);
@@ -420,9 +533,9 @@ export class DelegationService {
       mode !== 'restart' && file && existsSync(file)
         ? { conversationId: record.childConversationId, checkFailed: record.failure === 'check' }
         : undefined;
-    // 重试是用户在轮次之外的操作，不并入原批次，也不并入父会话当前轮次
+    // 重试是用户在轮次之外的操作，不并入原批次，也不并入父会话当前轮次；群里开过新对话就从委派人的新会话发起
     return this.delegate(
-      record.parentConversationId,
+      this.delegatorSession(record) ?? record.parentConversationId,
       {
         to: record.targetBotId,
         task: record.task,
@@ -431,8 +544,59 @@ export class DelegationService {
         ...(record.timeoutMinutes ? { deadlineMinutes: record.timeoutMinutes } : {}),
         ...(record.check ? { check: { kind: record.check.kind, text: record.check.text } } : {}),
       },
-      { standalone: true, retryOf: id, ...(resume ? { resume } : {}) }
+      {
+        standalone: true,
+        retryOf: id,
+        ...(resume ? { resume } : {}),
+        ...(mode === 'restart' ? { fresh: true } : {}),
+      }
     );
+  }
+
+  /**
+   * 退回返工：原执行人在本任务会话里新开一次执行（trigger rework，不挂 retryOf）。
+   * 成员验收时结果回到它当前群会话；人验收时回到委派人的会话，群里开过新对话就回到新会话。
+   */
+  rework(input: {
+    chatId: string;
+    delegationId: string;
+    actor: string;
+    reason: string;
+  }): DelegateResult {
+    const last = this.deps.store.get(input.delegationId);
+    if (!last?.taskId) return { ok: false, error: 'Delegation not found.' };
+    const human = input.actor === 'human';
+    const parentConversationId = human
+      ? this.delegatorSession(last)
+      : this.deps.chats.get(input.chatId)?.sessions[input.actor]?.conversationId;
+    if (!parentConversationId) return { ok: false, error: 'Parent bot session unavailable.' };
+    const by = human
+      ? 'a human reviewer'
+      : (this.deps.bots.get(input.actor)?.name ?? 'the reviewer');
+    return this.delegate(
+      parentConversationId,
+      {
+        to: last.targetBotId,
+        taskId: last.taskId,
+        task: `Your delivery was returned for rework by ${by}. Reason:\n${input.reason}`,
+        ...(last.timeoutMinutes ? { deadlineMinutes: last.timeoutMinutes } : {}),
+      },
+      { standalone: human, trigger: 'rework' }
+    );
+  }
+
+  /** 委派人的会话：原会话还在用原会话，群聊里原会话已结束（新对话）就用它在该群的当前会话 */
+  private delegatorSession(record: Delegation): string | undefined {
+    const parent = this.deps.authority.conversation(record.parentConversationId);
+    if (parent && parent.lifecycle !== 'ended') return parent.conversationId;
+    if (
+      !record.chatId ||
+      record.depth !== 1 ||
+      this.deps.chats.get(record.chatId)?.kind !== 'group'
+    )
+      return undefined;
+    const session = this.deps.host.ensureSession(record.chatId, record.parentBotId);
+    return session.ok ? session.conversationId : undefined;
   }
 
   /** 父回合被停止：取消该轮发起且未 keep 的委派；整批都已结束则只落时间线，不再唤醒父会话 */
@@ -530,7 +694,7 @@ export class DelegationService {
       }
       if (parent.bot?.delegationId) {
         const bot = this.deps.bots.get(head.parentBotId);
-        const record = this.deps.store.get(parent.bot.delegationId);
+        const record = this.executionOf(parent.conversationId);
         const saved = record?.effectivePermissions;
         // Interrupted delegation parents must not be restarted with their original task.
         if (
@@ -695,10 +859,6 @@ export class DelegationService {
   /** 嵌套执行所属的上层任务：发起它的那次执行（父会话上最近一条记录）挂的任务 */
   private nestedIn(record: Delegation): string | undefined {
     if (record.depth < 2) return undefined;
-    return this.deps.store
-      .list()
-      .filter((item) => item.childConversationId === record.parentConversationId)
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .at(-1)?.taskId;
+    return this.executionOf(record.parentConversationId)?.taskId;
   }
 }

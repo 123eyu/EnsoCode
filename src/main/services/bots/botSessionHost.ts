@@ -439,6 +439,18 @@ export class BotSessionHost {
     }
   }
 
+  /** 空闲时释放 worker 里的活实例（不推进 epoch、不走停止），下次投递按当前登记的配置与原 jsonl 重新 spawn */
+  releaseIdle(conversationId: string): Promise<boolean> {
+    return this.withLock(conversationId, async () => {
+      if (this.disposed || !this.live.has(conversationId) || this.isBusy(conversationId))
+        return false;
+      await this.deps.runtime.release(conversationId);
+      this.live.delete(conversationId);
+      this.liveProfiles.delete(conversationId);
+      return true;
+    });
+  }
+
   async abortConversation(conversationId: string): Promise<void> {
     this.markStopping(conversationId);
     this.cancelQueued((item) => item.conversationId === conversationId);

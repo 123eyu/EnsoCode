@@ -2651,6 +2651,8 @@ export const zhTranslations: Record<string, string> = {
   'Returned: {{reason}}': '退回原因：{{reason}}',
   'Show all ({{n}})': '显示全部（{{n}}）',
   'Assign to': '指派给',
+  'Reassign to': '改派给',
+  'Run failed: {{reason}}': '执行失败：{{reason}}',
   'Mark done': '标记完成',
   'Cancel task': '取消任务',
   'Acceptance check': '验收条件',

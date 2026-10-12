@@ -82,7 +82,9 @@ export function createDelegationTools(
       "Delegate a task to another member by name or id. Returns immediately; results arrive asynchronously. Context is truncated to 8000 characters. The delegation fails with a timeout after deadlineMinutes (capped by the member's own limit, 240 minutes by default). If the user stops or interrupts your current turn, delegations started in it are canceled unless keep is true." +
         " With check, the delegation passes only if one of the member's final tool outputs contains check.text; otherwise it ends as failed with 'acceptance check failed'." +
         (options.groupTasks
-          ? ' Pass taskId (e.g. "#3") to hand a group board task to the member: the task becomes doing with them as assignee; when the delegation succeeds it goes to review (done directly only if the member created the task) for the task creator or a human to accept or reject with group_tasks; on failure/cancel it returns to todo.' +
+          ? ' Pass taskId (e.g. "#3") to hand a group board task to the member: the task becomes doing with them as assignee; when the delegation succeeds it goes to review (done directly only if the member created the task) for the task creator or a human to accept or reject with group_tasks; on cancel it returns to todo.' +
+            ' If the run fails (error, timeout, interrupted, denied or check failed) the task stays doing with the same assignee: delegate the same taskId to them again to retry, or to another member to hand it over.' +
+            ' The same member keeps one session per task: delegating a taskId they worked on before (retry, or adding to a task awaiting review) continues that session, so send only what is new; another member starts fresh with a summary of the earlier runs.' +
             ' Without taskId, a new board task is created for each delegate call (titled from the first line of task, created by you) and handled the same way; the result includes its taskId.'
           : ''),
       {

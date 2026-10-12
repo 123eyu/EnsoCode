@@ -1,11 +1,17 @@
 import type { BotChat, BotProfile, Delegation, GroupTask } from '@shared/types/bot';
-import { GROUP_TASK_TEXT_MAX, GROUP_TASK_TITLE_MAX, TASK_CHECK_TEXT_MAX } from '@shared/types/bot';
+import {
+  GROUP_TASK_TEXT_MAX,
+  GROUP_TASK_TITLE_MAX,
+  stalledTaskRun,
+  TASK_CHECK_TEXT_MAX,
+} from '@shared/types/bot';
 import {
   Check,
   Loader2,
   MoreHorizontal,
   Pencil,
   Plus,
+  RotateCcw,
   Trash2,
   Undo2,
   UserPlus,
@@ -42,7 +48,7 @@ import { isRetried } from '@/stores/bots/delegations';
 import { chatDelegationGroups, taskColumns } from '@/stores/bots/groupBoard';
 import { BotAvatar } from './BotAvatar';
 import { FieldLabel } from './BotFields';
-import { CheckBadge, DelegationCard } from './DelegationCard';
+import { CheckBadge, DelegationCard, failureText, retryDelegation } from './DelegationCard';
 import { TaskRuns } from './TaskRuns';
 
 /** 已完成 / 已取消 / 终态委派默认只显示最近几条 */
@@ -107,6 +113,7 @@ export function TaskBoard({
   const { t } = useI18n();
   const tasks = useBotsStore((s) => s.tasks[chat.id]);
   const bots = useBotsStore((s) => s.bots);
+  const delegations = useBotsStore((s) => s.delegations);
   const [editing, setEditing] = useState<GroupTask | 'new' | null>(null);
   const [deleting, setDeleting] = useState<GroupTask | null>(null);
   const [returning, setReturning] = useState<GroupTask | null>(null);
@@ -138,6 +145,7 @@ export function TaskBoard({
       bots={byId}
       members={members}
       onOpenConversation={onOpenConversation}
+      failed={delegations.find((record) => record.id === task.delegationId)}
       onEdit={() => setEditing(task)}
       onAssign={(botId) =>
         void run(() => api.assign({ ...ref(task), botId }), t('Task not assigned'))
@@ -240,11 +248,14 @@ function TaskCard({
   onReturn,
   onCancel,
   onDelete,
+  failed,
 }: {
   task: GroupTask;
   bots: Map<string, BotProfile>;
   members: BotProfile[];
   onOpenConversation: (conversationId: string, title: string) => void;
+  /** 任务当前挂的委派记录（执行失败时显示原因） */
+  failed?: Delegation;
   onEdit: () => void;
   onAssign: (botId: string) => void;
   onComplete: () => void;
@@ -256,6 +267,8 @@ function TaskCard({
   const { t } = useI18n();
   const open = task.status === 'todo' || task.status === 'doing';
   const review = task.status === 'review';
+  // 执行失败：仍由执行人负责，只能重试、改派或取消
+  const stalled = stalledTaskRun(task);
   const assignee = task.assigneeBotId ? bots.get(task.assigneeBotId) : undefined;
   const creator =
     task.createdBy === 'human' ? t('You') : (bots.get(task.createdBy)?.name ?? t('Deleted member'));
@@ -279,11 +292,11 @@ function TaskCard({
               <Pencil />
               {t('Edit')}
             </MenuItem>
-            {open && !task.delegationId && members.length > 0 && (
+            {open && (!task.delegationId || stalled) && members.length > 0 && (
               <MenuSub>
                 <MenuSubTrigger>
                   <UserPlus />
-                  {t('Assign to')}
+                  {stalled ? t('Reassign to') : t('Assign to')}
                 </MenuSubTrigger>
                 <MenuSubPopup>
                   {members.map((bot) => (
@@ -299,7 +312,7 @@ function TaskCard({
                 </MenuSubPopup>
               </MenuSub>
             )}
-            {open && (
+            {open && !stalled && (
               <MenuItem onClick={onComplete}>
                 <Check />
                 {t('Mark done')}
@@ -341,6 +354,24 @@ function TaskCard({
           <div className="line-clamp-3 whitespace-pre-wrap">
             {t('Returned: {{reason}}', { reason: task.returnReason })}
           </div>
+        </div>
+      )}
+      {stalled && (
+        <div className="mt-1 rounded bg-destructive/10 px-1.5 py-1 text-foreground">
+          <div className="line-clamp-3 whitespace-pre-wrap">
+            {t('Run failed: {{reason}}', {
+              reason: (failed?.state === 'failed' && failureText(failed, t)) || t('Failed'),
+            })}
+          </div>
+          <Button
+            size="xs"
+            variant="outline"
+            className="mt-1"
+            onClick={() => retryDelegation(stalled.id, t)}
+          >
+            <RotateCcw />
+            {t('Retry')}
+          </Button>
         </div>
       )}
       {task.check && <CheckBadge check={task.check} className="mt-1" />}

@@ -11,6 +11,7 @@ import {
   type GroupTask,
   type GroupTaskRun,
   parseTaskCheck,
+  stalledTaskRun,
   type TaskCheck,
 } from '../../../shared/types/bot';
 import type { BotEvent, BotSendResult } from '../../../shared/types/botIpc';
@@ -23,7 +24,17 @@ import type { GroupTaskStore } from './groupTaskStore';
 export type TaskActor = string;
 export type TaskResult = { ok: true; task: GroupTask } | { ok: false; error: string };
 export type TaskGate =
-  | { ok: true; taskId: string; seq: number; check?: TaskCheck }
+  | {
+      ok: true;
+      taskId: string;
+      seq: number;
+      check?: TaskCheck;
+      /** 原执行人接着做：失败后重试 / 待验收时追加 */
+      trigger?: 'retry' | 'append';
+      /** 目标成员在本任务的子会话（任务 × 成员），由委派服务判断能否续用 */
+      session?: string;
+      returnReason?: string;
+    }
   | { ok: false; error: string };
 
 interface Deps {
@@ -36,8 +47,15 @@ interface Deps {
   cancelDelegation?: (id: string) => void;
   /** 成员在该群当前会话的消息（complete 验收读最终工具结果） */
   sessionMessages?: (chatId: string, botId: string) => Promise<readonly ProjectedMessage[]>;
-  /** 委派记录（旧任务没有 runs 时只读派生） */
+  /** 委派记录（旧任务没有 runs / sessions 时只读派生） */
   delegations?: () => readonly Delegation[];
+  /** 退回返工：在原执行人的任务会话里新开一次执行 */
+  rework?: (input: {
+    chatId: string;
+    delegationId: string;
+    actor: TaskActor;
+    reason: string;
+  }) => { ok: true } | { ok: false; error: string };
   now?: () => number;
 }
 
@@ -61,6 +79,13 @@ const pending = (check: TaskCheck | undefined) =>
   check ? { check: { kind: check.kind, text: check.text } } : {};
 /** 进入 done 时清掉上次退回原因 */
 const settled = ({ returnReason: _reason, ...task }: GroupTask): GroupTask => task;
+const FAILURE_TEXT: Record<NonNullable<Delegation['failure']>, string> = {
+  timeout: '超时',
+  interrupted: '中断',
+  denied: '被拒',
+  error: '出错',
+  check: '验收未通过',
+};
 const CHECK_INVALID = 'check must be { kind: "output-contains", text } with 1-200 characters.';
 const AUTO_TITLE_MAX = 60;
 
@@ -88,9 +113,10 @@ function sameRun(a: GroupTaskRun, b: GroupTaskRun): boolean {
 
 /**
  * 委派 → 任务状态机（纯函数）。返回 undefined 表示不变。
- * 创建：todo，或发起人自己认领中且无委派的任务 → doing / 负责人 = 目标 / 记 delegationId；
+ * 创建：todo，或发起人自己认领中且无委派的任务、执行失败的任务、原执行人续做的待验收任务
+ * → doing / 负责人 = 目标 / 记 delegationId；
  * 终态：仅当任务仍由这条委派负责（doing + 同 delegationId）——完成 → 带结果摘要，
- * 执行人即创建人直接 done，否则 review 待验收；其余 → 退回 todo。
+ * 执行人即创建人直接 done，否则 review 待验收；失败 → 保留负责人与委派；取消 → 退回 todo。
  */
 export function taskAfterDelegation(
   task: GroupTask,
@@ -99,10 +125,16 @@ export function taskAfterDelegation(
 ): GroupTask | undefined {
   if (record.taskId !== task.id) return undefined;
   if (isActiveDelegation(record)) {
-    if (task.delegationId !== undefined) return undefined;
+    if (task.delegationId === record.id) return undefined;
     const free =
-      task.status === 'todo' ||
-      (task.status === 'doing' && task.assigneeBotId === record.parentBotId);
+      (task.delegationId === undefined &&
+        (task.status === 'todo' ||
+          (task.status === 'doing' && task.assigneeBotId === record.parentBotId))) ||
+      stalledTaskRun(task) !== undefined ||
+      (task.status === 'review' &&
+        task.assigneeBotId === record.targetBotId &&
+        record.trigger !== undefined &&
+        record.trigger !== 'delegate');
     if (!free) return undefined;
     return {
       ...task,
@@ -124,6 +156,16 @@ export function taskAfterDelegation(
     return record.targetBotId === task.createdBy
       ? { ...settled(next), status: 'done' }
       : { ...next, status: 'review' };
+  }
+  if (record.state === 'failed') {
+    // 失败已同步过（runs 里已是失败）：投递时间等落盘不再改任务
+    if (stalledTaskRun(task)) return undefined;
+    return {
+      ...task,
+      ...verdict,
+      ...(record.failure === 'check' && record.error ? { result: record.error } : {}),
+      updatedAt: now,
+    };
   }
   const { assigneeBotId: _assignee, delegationId: _delegation, ...rest } = task;
   return {
@@ -316,7 +358,7 @@ export class GroupTaskService {
         ok: false,
         error: `Only the task creator (${this.name(task.createdBy)}) or a human can cancel task #${task.seq} while it awaits review.`,
       };
-    if (actor !== 'human' && task.delegationId && task.status === 'doing')
+    if (actor !== 'human' && task.delegationId && task.status === 'doing' && !stalledTaskRun(task))
       return {
         ok: false,
         error: `Task #${task.seq} is being handled by a delegation; the delegator can cancel it with check_delegation.`,
@@ -350,12 +392,22 @@ export class GroupTaskService {
     );
   }
 
-  /** 验收退回：review → todo，清负责人与委派、记原因，可再认领 / 指派 / 委派 */
-  reject(chatId: string, actor: TaskActor, ref: string, reason: string): TaskResult {
+  /**
+   * 验收退回：review → todo，清负责人与委派、记原因，可再认领 / 指派 / 委派；
+   * rework：同一执行人在本任务会话里新开一次执行，带退回理由，交付后回到待验收
+   */
+  reject(
+    chatId: string,
+    actor: TaskActor,
+    ref: string,
+    reason: string,
+    rework = false
+  ): TaskResult {
     const found = this.reviewing(chatId, actor, ref);
     if (!found.ok) return found;
     const text = reason.trim().slice(0, GROUP_TASK_TEXT_MAX);
     if (!text) return { ok: false, error: 'Give a reason when rejecting a task.' };
+    if (rework) return this.rework(chatId, actor, found.task, text);
     const {
       assigneeBotId: _assignee,
       delegationId: _delegation,
@@ -366,6 +418,28 @@ export class GroupTaskService {
       chatId,
       { ...rest, status: 'todo', returnReason: text, updatedAt: this.now() },
       `${this.name(actor)} 退回了 ${label(found.task)}：${short(text)}`,
+      actor
+    );
+  }
+
+  private rework(chatId: string, actor: TaskActor, task: GroupTask, reason: string): TaskResult {
+    if (!task.delegationId || !task.assigneeBotId)
+      return {
+        ok: false,
+        error: `Task #${task.seq} was not delivered by a delegation; reject it without rework.`,
+      };
+    const sent = this.deps.rework?.({
+      chatId,
+      delegationId: task.delegationId,
+      actor,
+      reason,
+    }) ?? { ok: false as const, error: 'Rework is unavailable.' };
+    if (!sent.ok) return sent;
+    const current = this.deps.store.find(this.board(chatId), task.id) ?? task;
+    return this.write(
+      chatId,
+      { ...current, returnReason: reason, updatedAt: this.now() },
+      `${this.name(actor)} 退回了 ${label(task)}，让 ${this.name(task.assigneeBotId)} 返工：${short(reason)}`,
       actor
     );
   }
@@ -398,11 +472,13 @@ export class GroupTaskService {
     const bot = this.deps.bots.get(botId);
     if (!chat?.members.includes(botId) || !bot || bot.archivedAt !== undefined)
       return { ok: false, error: 'Member unavailable.' };
-    if (task.status === 'done' || task.status === 'canceled' || task.delegationId)
+    const stalled = stalledTaskRun(task) !== undefined;
+    if (task.status === 'done' || task.status === 'canceled' || (task.delegationId && !stalled))
       return { ok: false, error: busy(task, this) };
+    const { delegationId: _delegation, ...free } = task;
     const now = this.now();
     const written = this.write(chatId, {
-      ...task,
+      ...free,
       ...pending(task.check),
       status: 'doing',
       assigneeBotId: botId,
@@ -456,8 +532,11 @@ export class GroupTaskService {
     this.deps.store.remove(this.board(chatId), taskId);
   }
 
-  /** 委派带 taskId 前的校验：返回规范 taskId */
-  gate(chatId: string | null, ref: string, parentBotId: string): TaskGate {
+  /**
+   * 委派带 taskId 前的校验：返回规范 taskId。目标是原执行人且任务执行失败 / 待验收时续做（trigger）；
+   * 失败的任务可由创建人或委派人改派他人。会话只按本群看板里的任务真实 id + 成员推导。
+   */
+  gate(chatId: string | null, ref: string, parentBotId: string, targetBotId?: string): TaskGate {
     if (!chatId || !this.group(chatId))
       return { ok: false, error: 'Tasks are only available in group chats.' };
     const task = this.deps.store.find(this.board(chatId), ref);
@@ -466,12 +545,48 @@ export class GroupTaskService {
         ok: false,
         error: `Task ${ref.startsWith('#') ? ref : `#${ref}`} not found in this group.`,
       };
-    const free =
+    const session = targetBotId ? this.sessionOf(task, targetBotId) : undefined;
+    const pass = (trigger?: 'retry' | 'append'): TaskGate => ({
+      ok: true,
+      taskId: task.id,
+      seq: task.seq,
+      ...pending(task.check),
+      ...(trigger ? { trigger } : {}),
+      ...(session ? { session } : {}),
+      ...(task.returnReason ? { returnReason: task.returnReason } : {}),
+    });
+    if (
       !task.delegationId &&
-      (task.status === 'todo' || (task.status === 'doing' && task.assigneeBotId === parentBotId));
-    return free
-      ? { ok: true, taskId: task.id, seq: task.seq, ...pending(task.check) }
-      : { ok: false, error: busy(task, this) };
+      (task.status === 'todo' || (task.status === 'doing' && task.assigneeBotId === parentBotId))
+    )
+      return pass();
+    const owner = parentBotId === task.createdBy || parentBotId === this.delegator(task);
+    if (owner && targetBotId) {
+      if (stalledTaskRun(task))
+        return pass(targetBotId === task.assigneeBotId ? 'retry' : undefined);
+      if (task.status === 'review' && targetBotId === task.assigneeBotId) return pass('append');
+    }
+    return { ok: false, error: busy(task, this) };
+  }
+
+  /** 任务 × 成员的子会话；旧任务没有 sessions 时取该成员在本任务最近一次执行的 */
+  private sessionOf(task: GroupTask, botId: string): string | undefined {
+    return (
+      task.sessions?.[botId] ??
+      (this.deps.delegations?.() ?? [])
+        .filter(
+          (record) =>
+            record.taskId === task.id && record.targetBotId === botId && record.depth === 1
+        )
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .at(-1)?.childConversationId
+    );
+  }
+
+  private delegator(task: GroupTask): string | undefined {
+    return task.delegationId
+      ? this.deps.delegations?.().find((record) => record.id === task.delegationId)?.parentBotId
+      : undefined;
   }
 
   /** 委派记录每次落盘后调用：按状态机同步任务并记执行摘要；nestedIn 为嵌套执行所属的上层任务 */
@@ -490,13 +605,22 @@ export class GroupTaskService {
     const next = tracked ?? linked;
     const summary = next.result ? `：${short(next.result)}` : '';
     const target = this.name(record.targetBotId);
+    const parent = this.name(record.parentBotId);
     const text = isActiveDelegation(record)
-      ? `${this.name(record.parentBotId)} 把 ${label(task)} 委派给 ${target}`
+      ? record.trigger === 'retry'
+        ? `${parent} 让 ${target} 重试 ${label(task)}`
+        : record.trigger === 'append'
+          ? `${parent} 给 ${label(task)} 追加了要求，${target} 接着做`
+          : record.trigger === 'rework'
+            ? undefined
+            : `${parent} 把 ${label(task)} 委派给 ${target}`
       : next.status === 'todo'
         ? `${label(task)} 的委派未完成，已退回待办`
-        : next.status === 'review'
-          ? `${target} 交付了 ${label(task)}，待${this.name(task.createdBy)}验收${summary}`
-          : `${target} 完成了 ${label(task)}${summary}`;
+        : next.status === 'doing'
+          ? `${label(task)} 执行失败：${FAILURE_TEXT[record.failure ?? 'error']}，仍由 ${target} 负责，可重试或改派`
+          : next.status === 'review'
+            ? `${target} 交付了 ${label(task)}，待${this.name(task.createdBy)}验收${summary}`
+            : `${target} 完成了 ${label(task)}${summary}`;
     this.write(record.chatId, next, text, record.parentBotId);
   }
 
@@ -620,7 +744,9 @@ export class GroupTaskService {
       case 'accept':
         return needId((ref) => this.accept(chatId, botId, ref));
       case 'reject':
-        return needId((ref) => this.reject(chatId, botId, ref, text('reason') ?? ''));
+        return needId((ref) =>
+          this.reject(chatId, botId, ref, text('reason') ?? '', params.rework === true)
+        );
       default:
         return {
           ok: false,
@@ -635,6 +761,7 @@ export class GroupTaskService {
   }
 
   private brief(task: GroupTask) {
+    const stalled = stalledTaskRun(task);
     return {
       id: `#${task.seq}`,
       title: task.title,
@@ -644,6 +771,7 @@ export class GroupTaskService {
       createdBy: this.name(task.createdBy),
       ...(task.result ? { result: task.result } : {}),
       ...(task.returnReason ? { returnReason: task.returnReason } : {}),
+      ...(stalled ? { failure: stalled.failure ?? 'error' } : {}),
       ...(task.check ? { check: task.check.text } : {}),
       ...(task.check?.passed !== undefined ? { checkPassed: task.check.passed } : {}),
     };

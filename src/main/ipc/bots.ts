@@ -606,6 +606,7 @@ export function getBotServices(): BotServices | null {
       return conversationMessages(conversationId);
     },
     delegations: () => delegationStore.list(),
+    rework: (input) => delegationsRef?.rework(input) ?? { ok: false, error: 'disabled' },
   });
   host.onDiscard((scope) => {
     if (scope.botId) tasks.releaseBot(scope.botId);
@@ -1527,11 +1528,14 @@ export function registerBotHandlers(): void {
   handle(IPC_CHANNELS.BOT_TASK_REVIEW, 'write', (_sender, request, services) => {
     const target = taskTarget(services, request);
     if (!target || typeof target.input.accept !== 'boolean') return INVALID;
+    const rework = target.input.rework;
+    if (rework !== undefined && (typeof rework !== 'boolean' || target.input.accept))
+      return INVALID;
     if (target.input.accept) return services.tasks.accept(target.chatId, 'human', target.id);
     const reason = target.input.reason;
     if (typeof reason !== 'string' || !reason.trim() || reason.length > GROUP_TASK_TEXT_MAX)
       return INVALID;
-    return services.tasks.reject(target.chatId, 'human', target.id, reason);
+    return services.tasks.reject(target.chatId, 'human', target.id, reason, rework === true);
   });
   handle(
     IPC_CHANNELS.BOTS_LIST,

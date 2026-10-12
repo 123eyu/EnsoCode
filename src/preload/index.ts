@@ -1229,11 +1229,11 @@ const electronAPI = {
         ipcRenderer.invoke(IPC_CHANNELS.BOT_TASK_CANCEL, request),
       remove: (request: { chatId: string; id: string }): Promise<BotActionResult> =>
         ipcRenderer.invoke(IPC_CHANNELS.BOT_TASK_DELETE, request),
-      /** 验收：通过 → done；退回需 reason → todo */
+      /** 验收：通过 → done；退回需 reason → todo，rework 时原执行人在原会话返工 */
       review: (
         request: { chatId: string; id: string } & (
           | { accept: true }
-          | { accept: false; reason: string }
+          | { accept: false; reason: string; rework?: boolean }
         )
       ): Promise<BotTaskWriteResult> => ipcRenderer.invoke(IPC_CHANNELS.BOT_TASK_REVIEW, request),
     },
