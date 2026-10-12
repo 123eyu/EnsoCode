@@ -546,6 +546,24 @@ const EntryRow = memo(function EntryRow({
           )}
         </div>
       );
+    case 'progress': {
+      const bot = bots.get(entry.botId);
+      return (
+        <div
+          data-slot="bot-progress"
+          className="flex items-center gap-2 text-muted-foreground text-xs"
+        >
+          <BotAvatar bot={bot} size="sm" />
+          <span className="shrink-0 font-medium text-foreground">
+            {bot?.name ?? t('Deleted member')}
+          </span>
+          <span className="min-w-0 truncate">
+            <MentionText text={entry.text} bots={bots} />
+          </span>
+          <span className="shrink-0">{timeOf(entry.at)}</span>
+        </div>
+      );
+    }
     case 'delegation':
       return (
         <DelegationCard

@@ -336,6 +336,18 @@ export function GroupChatScreen(props: Props) {
             )}
           </div>
         );
+      case 'progress': {
+        const bot = bots.get(entry.botId);
+        return (
+          <div key={entry.seq} className="flex items-center gap-2 text-xs">
+            <BotAvatar bot={bot} size="sm" />
+            <span className="shrink-0 font-medium">{bot?.name ?? '成员'}</span>
+            <span className="min-w-0 truncate text-muted-foreground">
+              {withMentions(entry.text, names)}
+            </span>
+          </div>
+        );
+      }
       case 'system':
         return (
           <p key={entry.seq} className="text-center text-muted-foreground text-xs">

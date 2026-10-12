@@ -79,6 +79,27 @@ describe('buildSmartRouteInput', () => {
     expect(input.message).toBe('hi');
   });
 
+  it('智能选人不读 progress 条目', () => {
+    const entries: GroupEntry[] = [
+      human(1, '先修登录'),
+      {
+        kind: 'progress',
+        seq: 2,
+        id: 'p2',
+        at: 0,
+        botId: 'be',
+        taskId: 't',
+        taskSeq: 1,
+        delegationId: 'd',
+        phase: 'blocked',
+        text: '#1 卡住了，缺：密码 @前端',
+      },
+      human(3, '新消息'),
+    ];
+    const input = buildSmartRouteInput(chat, members, entries, human(3, '新消息'));
+    expect(input.recent).toEqual([{ speaker: 'Human', text: '先修登录' }]);
+  });
+
   it('历史只取新消息之前的人类/成员文本，最多 8 条并截断', () => {
     const entries: GroupEntry[] = [
       { kind: 'system', seq: 1, id: 's1', at: 0, text: '系统' },

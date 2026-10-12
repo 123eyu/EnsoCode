@@ -324,6 +324,9 @@ function parseHumanImages(value: unknown): { images?: string[] } {
   return images.length ? { images } : {};
 }
 
+export const GROUP_PROGRESS_PHASES = ['started', 'blocked', 'delivered'] as const;
+export type GroupProgressPhase = (typeof GROUP_PROGRESS_PHASES)[number];
+
 export type GroupEntry =
   | (GroupEntryBase & {
       kind: 'human';
@@ -352,6 +355,18 @@ export type GroupEntry =
       to: BotId;
       state: DelegationState;
       summary?: string;
+      /** 挂了看板任务：群里已有「交付」进度，结果卡默认折叠 */
+      taskId?: string;
+    })
+  | (GroupEntryBase & {
+      /** Main 在执行状态转换时按模板以执行人名义写；不路由、不选人、不解析 @ */
+      kind: 'progress';
+      botId: BotId;
+      taskId: string;
+      taskSeq: number;
+      delegationId: string;
+      phase: GroupProgressPhase;
+      text: string;
     })
   | (GroupEntryBase & {
       kind: 'system';
@@ -656,8 +671,27 @@ export function parseGroupEntry(value: unknown): GroupEntry | undefined {
         state: value.state as DelegationState,
       };
       if (typeof value.summary === 'string') entry.summary = value.summary;
+      if (isText(value.taskId)) entry.taskId = value.taskId;
       return entry;
     }
+    case 'progress':
+      return isBotId(value.botId) &&
+        isText(value.taskId) &&
+        isSeq(value.taskSeq) &&
+        isText(value.delegationId) &&
+        GROUP_PROGRESS_PHASES.includes(value.phase as GroupProgressPhase) &&
+        typeof value.text === 'string'
+        ? {
+            ...base,
+            kind: 'progress',
+            botId: value.botId,
+            taskId: value.taskId,
+            taskSeq: value.taskSeq,
+            delegationId: value.delegationId,
+            phase: value.phase as GroupProgressPhase,
+            text: value.text,
+          }
+        : undefined;
     case 'system':
       if (typeof value.text !== 'string') return undefined;
       return isObject(value.routine) && isBotId(value.routine.botId) && isBotId(value.routine.id)

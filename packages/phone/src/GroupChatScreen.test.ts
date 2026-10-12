@@ -109,6 +109,35 @@ describe('phone group recovery and folding UI', () => {
       render({ timeline: { entries, lastSeq: 900, hasOlder: true, history: true } })
     ).toContain('回到最新消息');
   });
+  it('renders progress as one line under the member name; old phones skip unknown kinds without crashing', () => {
+    const progress = {
+      id: 'p',
+      seq: 5,
+      at: 5,
+      kind: 'progress',
+      botId: 'bot',
+      taskId: 't',
+      taskSeq: 3,
+      delegationId: 'd',
+      phase: 'started',
+      text: '开工 #3『登录页』',
+    } as PairGroupEntry;
+    const html = render({
+      bots: new Map([
+        ['bot', { id: 'bot', name: 'Bob', title: '', avatarColor: '#000000', status: 'idle' }],
+      ]),
+      timeline: { entries: [...entries, progress], lastSeq: 5, hasOlder: false },
+    });
+    expect(html).toContain('Bob');
+    expect(html).toContain('开工 #3『登录页』');
+    const future = { ...progress, kind: 'from-the-future' } as unknown as PairGroupEntry;
+    const old = render({
+      timeline: { entries: [...entries, future], lastSeq: 5, hasOlder: false },
+    });
+    expect(old).toContain('CURRENT_TASK');
+    expect(old).not.toContain('开工 #3');
+  });
+
   it('shows the mic button only when voice is provided', () => {
     expect(render()).not.toContain('aria-label="语音输入"');
     expect(render({ voice: noop as never })).toContain('aria-label="语音输入"');

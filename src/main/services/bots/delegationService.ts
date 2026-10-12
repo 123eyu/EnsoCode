@@ -1438,6 +1438,7 @@ export class DelegationService {
             to: record.targetBotId,
             state: record.state,
             summary: delegationResultBody(record).slice(0, 500),
+            ...(record.taskId ? { taskId: record.taskId } : {}),
           });
         this.deps.emit({ kind: 'timeline', chatId: record.chatId });
       }

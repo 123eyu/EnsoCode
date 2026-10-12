@@ -41,6 +41,10 @@ const output = (toolCallId: string, text: string, timestamp: number, isError = f
   content: [{ type: 'text' as const, text }],
 });
 
+const progressTexts = (id = chatId) =>
+  chats
+    .readEntries(id, { limit: 100 })
+    .flatMap((entry) => (entry.kind === 'progress' ? [entry.text] : []));
 const systemTexts = () =>
   chats
     .readEntries(chatId, { limit: 100 })
@@ -375,7 +379,8 @@ describe('群话题', () => {
       })
     );
     expect(store().find(chatId, '#1')).toMatchObject({ assigneeBotId: alice });
-    expect(texts(thread.id).at(-1)).toBe('Bob 把 #1 Login page 委派给 Alice');
+    // 委派不再写 system 行；开工 / 交付由 progress 公开
+    expect(texts(thread.id).at(-1)).toBe('Alice 新建了任务 #1 Login page');
   });
 
   it('根群归档后话题里也不能用看板', () => {
@@ -567,7 +572,7 @@ describe('委派联动状态机 taskAfterDelegation', () => {
 });
 
 describe('委派闸门与同步', () => {
-  it('gate：未知 / 终态 / 他人认领拒绝；同步后写 system 时间线', () => {
+  it('gate：未知 / 终态 / 他人认领拒绝；同步后交付写 progress，不再写委派 / 交付 system 行', () => {
     const task = added();
     expect(service.gate(chatId, '#9', alice)).toEqual({
       ok: false,
@@ -588,10 +593,8 @@ describe('委派闸门与同步', () => {
     });
     service.sync({ ...record, state: 'completed', result: 'done!' });
     expect(store().find(chatId, '#1')).toMatchObject({ status: 'review', result: 'done!' });
-    expect(systemTexts().slice(-2)).toEqual([
-      'Bob 把 #1 Login page 委派给 Alice',
-      'Alice 交付了 #1 Login page，待用户验收：done!',
-    ]);
+    expect(systemTexts()).toEqual(['用户 新建了任务 #1 Login page', 'Bob 认领了 #1 Login page']);
+    expect(progressTexts()).toEqual(['交付 #1：done!']);
   });
 });
 
@@ -613,7 +616,7 @@ describe('待验收 review', () => {
 
   it('执行人不能验收 / 退回 / 完成 / 取消自己的任务；看板占用提示待验收', () => {
     delivered(alice, alice, bob);
-    expect(systemTexts().at(-1)).toBe('Bob 交付了 #1 Login page，待Alice验收：shipped');
+    expect(progressTexts().at(-1)).toBe('交付 #1：shipped');
     expect(service.accept(chatId, bob, '#1')).toEqual({
       ok: false,
       error: 'Only the task creator (Alice) or a human can review task #1.',
@@ -778,11 +781,8 @@ describe('执行记录 runs / sessions', () => {
       status: 'review',
       runs: [{ id: DELEGATION, state: 'completed', startedAt: 5, finishedAt: 9 }],
     });
-    expect(systemTexts()).toEqual([
-      'Alice 新建了任务 #1 Login page',
-      'Alice 把 #1 Login page 委派给 Bob',
-      'Bob 交付了 #1 Login page，待Alice验收：ok',
-    ]);
+    expect(systemTexts()).toEqual(['Alice 新建了任务 #1 Login page']);
+    expect(progressTexts()).toEqual(['交付 #1：ok']);
     // 执行人就是创建人：仍直接 done
     const own = added('Own', bob);
     const mine = delegation({
@@ -964,7 +964,7 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
       sessions: { [bob]: 'child-bob' },
       runs: [{ id: DELEGATION, state: 'failed', failure: 'timeout' }],
     });
-    expect(systemTexts().at(-1)).toBe('#1 Login page 执行失败：超时，仍由 Bob 负责，可重试或改派');
+    expect(progressTexts().at(-1)).toBe('#1 执行失败：超时');
     expect(service.tool(chatId, alice, { action: 'list' })).toMatchObject({
       tasks: [
         {
@@ -1156,7 +1156,7 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
       blockedNeed: '数据库密码',
       blockedStreak: { [bob]: 1 },
     });
-    expect(systemTexts().at(-1)).toBe('#1 Login page 卡住了，Bob 缺：数据库密码');
+    expect(progressTexts().at(-1)).toBe('#1 卡住了，缺：数据库密码 @Alice');
     expect(service.tool(chatId, alice, { action: 'list' })).toMatchObject({
       tasks: [{ id: '#1', status: 'blocked', blockedReason: 'need', need: '数据库密码' }],
     });
@@ -1238,7 +1238,7 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
       delegationId: DELEGATION,
       text: '密码是 hunter2',
     });
-    expect(systemTexts().at(-1)).toBe('用户 回复了 #1 Login page：密码是 hunter2，Bob 接着做');
+    expect(systemTexts().at(-1)).toBe('用户 回复了 #1 Login page：密码是 hunter2');
     expect(store().find(chatId, '#1')).toMatchObject({ status: 'doing', delegationId: runId(5) });
 
     handed('failed');
@@ -1266,5 +1266,219 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
     expect(systemTexts().at(-1)).toBe('用户 评论了 #4 Idle：先放着');
     expect(reply).toHaveBeenCalledTimes(1);
     expect(interject).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('公开进度 progress', () => {
+  const runId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const progress = () =>
+    chats.readEntries(chatId, { limit: 100 }).flatMap((entry) =>
+      entry.kind === 'progress'
+        ? [
+            {
+              phase: entry.phase,
+              botId: entry.botId,
+              delegationId: entry.delegationId,
+              text: entry.text,
+            },
+          ]
+        : []
+    );
+  beforeEach(() => vi.useFakeTimers({ now: 1_000_000 }));
+  afterEach(() => vi.useRealTimers());
+
+  /** alice 建卡委派给 bob：排队 → 开工；legacy 跟着最新记录走 */
+  const begin = (over: Partial<Delegation> = {}, title = 'Login page') => {
+    const task = added(title, alice);
+    const queued = delegation({
+      id: runId(1),
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+      childConversationId: 'child-bob',
+      ...over,
+    });
+    legacy = [queued];
+    service.sync(queued);
+    const running: Delegation = { ...queued, state: 'running', startedAt: Date.now() };
+    legacy = [running];
+    service.sync(running);
+    return { task, running };
+  };
+  const end = (record: Delegation, over: Partial<Delegation>) => {
+    const done: Delegation = { ...record, finishedAt: Date.now(), ...over } as Delegation;
+    legacy = [done];
+    service.sync(done);
+    return done;
+  };
+
+  it('开工延后 60 秒才写，以执行人名义；交付写结果首行前 120 字；不再写委派 / 交付的 system 行', () => {
+    const { running } = begin();
+    expect(progress()).toEqual([]);
+    vi.advanceTimersByTime(59_999);
+    expect(progress()).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(progress()).toEqual([
+      { phase: 'started', botId: bob, delegationId: runId(1), text: '开工 #1『Login page』' },
+    ]);
+    // 同一执行再落盘（如追加）不重复写开工
+    service.sync({ ...running, timeoutMinutes: 30 });
+    vi.advanceTimersByTime(120_000);
+    const long = `${'长'.repeat(130)}\n第二行`;
+    end(running, { state: 'completed', result: `\n  ${long}` });
+    expect(progress().at(-1)).toEqual({
+      phase: 'delivered',
+      botId: bob,
+      delegationId: runId(1),
+      text: `交付 #1：${'长'.repeat(120)}…`,
+    });
+    expect(progress()).toHaveLength(2);
+    expect(systemTexts()).toEqual(['Alice 新建了任务 #1 Login page']);
+    const [entry] = chats.readEntries(chatId, { limit: 100 }).filter((e) => e.kind === 'progress');
+    expect(entry).toMatchObject({ taskId: store().find(chatId, '#1')?.id, taskSeq: 1 });
+  });
+
+  it('60 秒内结束的执行不发开工，只发交付', () => {
+    const { running } = begin();
+    vi.advanceTimersByTime(30_000);
+    end(running, { state: 'completed', result: 'done' });
+    vi.advanceTimersByTime(120_000);
+    expect(progress()).toEqual([
+      { phase: 'delivered', botId: bob, delegationId: runId(1), text: '交付 #1：done' },
+    ]);
+  });
+
+  it('排队不发：一直排队的执行到点也不写开工', () => {
+    const task = added('Login page', alice);
+    const queued = delegation({
+      id: runId(1),
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+    });
+    legacy = [queued];
+    service.sync(queued);
+    vi.advanceTimersByTime(120_000);
+    expect(progress()).toEqual([]);
+  });
+
+  it('卡住（缺信息）写缺什么并 @ 等待的人；执行失败写原因；都不再写对应 system 行', () => {
+    const first = begin().running;
+    end(first, { state: 'blocked', blocked: { need: '数据库密码', waitFor: 'parent', at: 2 } });
+    expect(progress().at(-1)).toMatchObject({
+      phase: 'blocked',
+      botId: bob,
+      text: '#1 卡住了，缺：数据库密码 @Alice',
+    });
+    const second = begin({ id: runId(2) }, 'Docs').running;
+    end(second, { state: 'blocked', blocked: { need: '发布窗口', waitFor: 'human', at: 2 } });
+    expect(progress().at(-1)).toMatchObject({ text: '#2 卡住了，缺：发布窗口 @用户' });
+    const third = begin({ id: runId(3) }, 'Ops').running;
+    end(third, { state: 'failed', failure: 'timeout' });
+    expect(progress().at(-1)).toMatchObject({ phase: 'blocked', text: '#3 执行失败：超时' });
+    expect(systemTexts().filter((text) => /卡住|执行失败|委派给/u.test(text))).toEqual([]);
+    vi.advanceTimersByTime(120_000);
+    expect(progress().filter((item) => item.phase === 'started')).toEqual([]);
+  });
+
+  it('答复 / 返工的执行开工写「接着做 #N」；重试、追加的执行不发开工，结束照发', () => {
+    begin({ trigger: 'reply' });
+    vi.advanceTimersByTime(60_000);
+    expect(progress().at(-1)).toMatchObject({ phase: 'started', text: '接着做 #1' });
+    begin({ id: runId(2), trigger: 'rework' }, 'Docs');
+    vi.advanceTimersByTime(60_000);
+    expect(progress().at(-1)).toMatchObject({ phase: 'started', text: '接着做 #2' });
+    const retry = begin({ id: runId(3), trigger: 'retry' }, 'Ops').running;
+    const append = begin({ id: runId(4), trigger: 'append' }, 'QA').running;
+    legacy = [retry, append];
+    vi.advanceTimersByTime(120_000);
+    expect(progress().map((item) => item.delegationId)).toEqual([runId(1), runId(2)]);
+    end(retry, { state: 'completed', result: 'ok' });
+    expect(progress().at(-1)).toMatchObject({ delegationId: runId(3), text: '交付 #3：ok' });
+  });
+
+  it('人在任务卡答复：system 行只记答复，接着做交给进度条目', () => {
+    const { running } = begin();
+    end(running, { state: 'blocked', blocked: { need: '密码', waitFor: 'human', at: 2 } });
+    Object.assign((service as unknown as { deps: object }).deps, {
+      reply: () => {
+        service.sync(
+          delegation({
+            id: runId(5),
+            chatId,
+            parentBotId: alice,
+            targetBotId: bob,
+            taskId: store().find(chatId, '#1')!.id,
+            trigger: 'reply',
+          })
+        );
+        return { ok: true as const };
+      },
+    });
+    return service.reply(chatId, '#1', 'hunter2').then(() => {
+      expect(systemTexts().at(-1)).toBe('用户 回复了 #1 Login page：hunter2');
+    });
+  });
+
+  it('深度 2 嵌套执行只发卡住：开工、交付、失败都不发，卡住记在上层任务编号下', () => {
+    const { task } = begin();
+    vi.advanceTimersByTime(60_000);
+    const carol = bots.create({ name: 'Carol' }, []);
+    if (!carol.ok) throw new Error('bot');
+    const nested = (n: number): Delegation => {
+      const { taskId: _taskId, ...rest } = delegation({
+        id: runId(n),
+        chatId,
+        parentBotId: bob,
+        targetBotId: carol.bot.id,
+        parentConversationId: 'child-bob',
+        childConversationId: `child-carol-${n}`,
+        depth: 2,
+        state: 'running',
+        startedAt: Date.now(),
+      });
+      return rest;
+    };
+    service.sync(nested(6), task.id);
+    vi.advanceTimersByTime(120_000);
+    service.sync({ ...nested(6), state: 'completed', result: 'logs ok' }, task.id);
+    service.sync(nested(7), task.id);
+    service.sync({ ...nested(7), state: 'failed', failure: 'error' }, task.id);
+    service.sync(nested(8), task.id);
+    service.sync(
+      { ...nested(8), state: 'blocked', blocked: { need: 'VPN 账号', waitFor: 'parent', at: 3 } },
+      task.id
+    );
+    expect(progress().filter((item) => item.delegationId !== runId(1))).toEqual([
+      {
+        phase: 'blocked',
+        botId: carol.bot.id,
+        delegationId: runId(8),
+        text: '#1 卡住了，缺：VPN 账号 @Bob',
+      },
+    ]);
+  });
+
+  it('进度写到发起委派的话题', () => {
+    const thread = chats.createThread(chatId)!;
+    const task = added('Login page', alice);
+    const record = delegation({
+      id: runId(1),
+      chatId: thread.id,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+      state: 'running',
+      startedAt: Date.now(),
+    });
+    legacy = [record];
+    service.sync(record);
+    service.sync({ ...record, state: 'completed', result: 'ok' });
+    expect(
+      chats.readEntries(thread.id, { limit: 10 }).filter((e) => e.kind === 'progress')
+    ).toHaveLength(1);
+    expect(progress()).toEqual([]);
   });
 });

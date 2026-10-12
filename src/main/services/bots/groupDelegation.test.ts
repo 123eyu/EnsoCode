@@ -31,7 +31,8 @@ function fixture(
   classifyMemberTask?: MemberTaskClassifier,
   withTasks = false,
   sessionMessages?: (conversationId: string) => Promise<readonly ProjectedMessage[]>,
-  minuteMs?: number
+  minuteMs?: number,
+  progressDelayMs?: number
 ) {
   const bots = new BotStore(join(root, 'bots'));
   // 全员只读：本文件只验证委派接力与回传，工作区写锁见 botSessionHost.lock.test
@@ -91,6 +92,7 @@ function fixture(
         bots,
         emit: () => {},
         delegations: () => store.list(),
+        ...(progressDelayMs !== undefined ? { progressDelayMs } : {}),
         rework: (input) => current?.rework(input) ?? { ok: false as const, error: 'disabled' },
         reply: (input) => current?.reply(input) ?? { ok: false as const, error: 'disabled' },
         interject: async (input) =>
@@ -413,6 +415,39 @@ it('群主不带 taskId 委派：自动建卡挂上执行，交付后进待验�
     result: '改好了',
     runs: [{ state: 'completed', startedAt, finishedAt: expect.any(Number) }],
   });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('公开进度：开工 / 交付以执行人名义写进群，带 @ 也不触发路由、不进轮次；挂任务的结果卡带 taskId', async () => {
+  const f = fixture(['林经理', '阿后', '小三'], undefined, true, undefined, undefined, 0);
+  const boss = await bossTurn(f);
+  const sent = f.delegations.delegate(boss, { to: '阿后', task: '让 @小三 也看看登录页' });
+  if (!sent.ok) throw new Error(sent.error);
+  await settle();
+  const child = f.child(sent.delegationId);
+  f.start(child);
+  await settle();
+  f.reply(boss, '已安排');
+  await settle();
+  f.reply(child, '改好了 @小三 你看下');
+  await settle();
+  const progress = f.entries().flatMap((e) => (e.kind === 'progress' ? [e] : []));
+  expect(progress.map((e) => [e.botId, e.phase, e.text])).toEqual([
+    [f.ids[1], 'started', '开工 #1『让 @小三 也看看登录页』'],
+    [f.ids[1], 'delivered', '交付 #1：改好了 @小三 你看下'],
+  ]);
+  expect(f.chats.get(f.chat.id)?.sessions[f.ids[2]]).toBeUndefined();
+  expect(JSON.stringify(f.groups.state(f.chat.id))).not.toContain(f.ids[2]);
+  f.start(boss);
+  await settle();
+  f.reply(boss, '收到');
+  await settle();
+  expect(f.entries().find((e) => e.kind === 'delegation')).toMatchObject({
+    delegationId: sent.delegationId,
+    taskId: f.tasks?.list(f.chat.id)[0].id,
+  });
+  expect(f.chats.get(f.chat.id)?.sessions[f.ids[2]]).toBeUndefined();
   f.delegations.dispose();
   f.groups.dispose();
 });

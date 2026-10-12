@@ -9,6 +9,7 @@ import {
   GROUP_TASK_RUNS_MAX,
   GROUP_TASK_TEXT_MAX,
   GROUP_TASK_TITLE_MAX,
+  type GroupProgressPhase,
   type GroupTask,
   type GroupTaskRun,
   type HumanEntryRefs,
@@ -74,6 +75,8 @@ interface Deps {
     text: string;
   }) => Promise<{ ok: true } | { ok: false; error: string }>;
   now?: () => number;
+  /** 开工进度延后多久写（测试用），缺省 60 秒 */
+  progressDelayMs?: number;
 }
 
 export const GROUP_TASK_ACTIONS = [
@@ -92,6 +95,8 @@ const short = (text: string, max = 80) => {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 };
 const label = (task: GroupTask) => `#${task.seq} ${task.title}`;
+const progressId = (delegationId: string, phase: GroupProgressPhase) =>
+  `progress:${delegationId}:${phase}`;
 const pending = (check: TaskCheck | undefined) =>
   check ? { check: { kind: check.kind, text: check.text } } : {};
 /** 进入 done 时清掉上次退回原因 */
@@ -113,6 +118,12 @@ const FAILURE_TEXT: Record<NonNullable<Delegation['failure']>, string> = {
   error: '出错',
   check: '验收未通过',
 };
+/** 执行跑满这么久还没结束才在群里发「开工」，短执行只发交付 */
+const PROGRESS_STARTED_DELAY_MS = 60_000;
+const PROGRESS_RESULT_MAX = 120;
+/** 续跑类执行的开工写「接着做」；重试、追加不发开工 */
+const CONTINUED: ReadonlySet<string> = new Set(['reply', 'rework']);
+const SILENT_START: ReadonlySet<string> = new Set(['retry', 'append']);
 const CHECK_INVALID = 'check must be { kind: "output-contains", text } with 1-200 characters.';
 const AUTO_TITLE_MAX = 60;
 
@@ -228,6 +239,8 @@ export function taskAfterDelegation(
 export class GroupTaskService {
   /** 人在任务卡答复卡住的任务、新执行正在落盘：sync 把答复写进同一行 */
   private humanReply?: { taskId: string; text: string };
+  /** 等着写开工进度的执行 */
+  private readonly starting = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly deps: Deps) {}
 
@@ -749,34 +762,109 @@ export class GroupTaskService {
     const tracked = this.tracked(linked ?? task, record);
     if (!linked) {
       if (tracked) this.write(record.chatId, { ...tracked, updatedAt: now });
+      if (!record.taskId) {
+        // 深度 2 嵌套执行只公开卡住
+        if (record.state === 'blocked') this.progress(record, task, 'blocked');
+      } else if (task.delegationId === record.id) this.scheduleStarted(record);
       return;
     }
     const next = tracked ?? linked;
-    const summary = next.result ? `：${short(next.result)}` : '';
     const target = this.name(record.targetBotId);
     const parent = this.name(record.parentBotId);
+    // 开工 / 卡住 / 交付由 progress 条目公开，这里只留发起方动作与退回待办
     const text = isActiveDelegation(record)
       ? record.trigger === 'retry'
         ? `${parent} 让 ${target} 重试 ${label(task)}`
         : record.trigger === 'append'
           ? `${parent} 给 ${label(task)} 追加了要求，${target} 接着做`
-          : record.trigger === 'reply'
-            ? this.humanReply?.taskId === task.id
-              ? `${this.name('human')} 回复了 ${label(task)}：${short(this.humanReply.text)}，${target} 接着做`
-              : `${target} 接着做 ${label(task)}`
-            : record.trigger === 'rework'
-              ? undefined
-              : `${parent} 把 ${label(task)} 委派给 ${target}`
+          : record.trigger === 'reply' && this.humanReply?.taskId === task.id
+            ? `${this.name('human')} 回复了 ${label(task)}：${short(this.humanReply.text)}`
+            : undefined
       : next.status === 'todo'
         ? `${label(task)} 的委派未完成，已退回待办`
-        : next.status === 'blocked'
-          ? next.blockedReason === 'need'
-            ? `${label(task)} 卡住了，${target} 缺：${short(next.blockedNeed ?? '')}`
-            : `${label(task)} 执行失败：${FAILURE_TEXT[record.failure ?? 'error']}，仍由 ${target} 负责，可重试或改派`
-          : next.status === 'review'
-            ? `${target} 交付了 ${label(task)}，待${this.name(task.createdBy)}验收${summary}`
-            : `${target} 完成了 ${label(task)}${summary}`;
+        : undefined;
     this.write(record.chatId, next, text, record.parentBotId);
+    if (isActiveDelegation(record)) this.scheduleStarted(record);
+    else {
+      this.clearStarted(record.id);
+      if (next.status === 'blocked') this.progress(record, next, 'blocked');
+      else if (next.status === 'review' || next.status === 'done')
+        this.progress(record, next, 'delivered');
+    }
+  }
+
+  /** 开工进度：执行开工满 60 秒仍未结束、任务仍由它负责才写；排队、重试、追加、嵌套不写 */
+  private scheduleStarted(record: Delegation): void {
+    if (
+      record.state !== 'running' ||
+      record.depth !== 1 ||
+      !record.chatId ||
+      SILENT_START.has(record.trigger ?? 'delegate') ||
+      this.starting.has(record.id) ||
+      this.deps.chats.hasEntry(record.chatId, progressId(record.id, 'started'))
+    )
+      return;
+    const delay =
+      (record.startedAt ?? this.now()) +
+      (this.deps.progressDelayMs ?? PROGRESS_STARTED_DELAY_MS) -
+      this.now();
+    const timer = setTimeout(
+      () => {
+        this.starting.delete(record.id);
+        const current = this.deps.delegations?.().find((item) => item.id === record.id);
+        if (current?.state !== 'running' || !current.taskId || !current.chatId) return;
+        if (!this.group(current.chatId)) return;
+        const task = this.deps.store.find(this.board(current.chatId), current.taskId);
+        if (task?.delegationId === current.id) this.progress(current, task, 'started');
+      },
+      Math.max(0, delay)
+    );
+    timer.unref?.();
+    this.starting.set(record.id, timer);
+  }
+
+  private clearStarted(id: string): void {
+    clearTimeout(this.starting.get(id));
+    this.starting.delete(id);
+  }
+
+  /** 以执行人名义写进发起委派的话题；同一执行同一阶段只写一次 */
+  private progress(record: Delegation, task: GroupTask, phase: GroupProgressPhase): void {
+    const chatId = record.chatId;
+    const id = progressId(record.id, phase);
+    if (!chatId || this.deps.chats.hasEntry(chatId, id)) return;
+    const entry = this.deps.chats.appendEntry(chatId, {
+      kind: 'progress',
+      id,
+      at: this.now(),
+      botId: record.targetBotId,
+      taskId: task.id,
+      taskSeq: task.seq,
+      delegationId: record.id,
+      phase,
+      text: this.progressText(record, task, phase),
+    });
+    if (entry) this.deps.emit({ kind: 'timeline', chatId, seq: entry.seq });
+  }
+
+  private progressText(record: Delegation, task: GroupTask, phase: GroupProgressPhase): string {
+    const seq = task.seq;
+    if (phase === 'started')
+      return CONTINUED.has(record.trigger ?? 'delegate')
+        ? `接着做 #${seq}`
+        : `开工 #${seq}『${task.title}』`;
+    if (phase === 'blocked') {
+      if (record.state !== 'blocked')
+        return `#${seq} 执行失败：${FAILURE_TEXT[record.failure ?? 'error']}`;
+      const waiting = record.blocked?.waitFor === 'human' ? 'human' : record.parentBotId;
+      return `#${seq} 卡住了，缺：${short(record.blocked?.need ?? '', 300)} @${this.name(waiting)}`;
+    }
+    const line =
+      (record.result ?? '')
+        .split('\n')
+        .map((item) => item.trim())
+        .find(Boolean) ?? '';
+    return line ? `交付 #${seq}：${short(line, PROGRESS_RESULT_MAX)}` : `交付 #${seq}`;
   }
 
   /** 把执行写进 runs，深度 1 的记执行人子会话；没变化返回 undefined */

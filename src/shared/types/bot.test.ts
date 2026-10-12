@@ -358,6 +358,29 @@ describe('parseGroupEntry', () => {
         mentions: [BOT_A],
         refs: { task: 'task-1' },
       },
+      {
+        seq: 8,
+        id: 'e8',
+        at: 8,
+        kind: 'delegation',
+        delegationId: 'd2',
+        from: BOT_A,
+        to: BOT_B,
+        state: 'completed',
+        taskId: 'task-1',
+      },
+      {
+        seq: 9,
+        id: 'progress:d2:started',
+        at: 9,
+        kind: 'progress',
+        botId: BOT_B,
+        taskId: 'task-1',
+        taskSeq: 3,
+        delegationId: 'd2',
+        phase: 'started',
+        text: '开工 #3『x』',
+      },
     ];
     for (const entry of entries) expect(parseGroupEntry(entry)).toEqual(entry);
     expect(
@@ -383,6 +406,30 @@ describe('parseGroupEntry', () => {
         state: 'weird',
       },
       { seq: 1, id: 'e', at: 1, kind: 'nope', text: 'x' },
+      {
+        seq: 1,
+        id: 'e',
+        at: 1,
+        kind: 'progress',
+        botId: BOT_B,
+        taskId: 't',
+        taskSeq: 1,
+        delegationId: 'd',
+        phase: 'paused',
+        text: 'x',
+      },
+      {
+        seq: 1,
+        id: 'e',
+        at: 1,
+        kind: 'progress',
+        botId: 'nobody',
+        taskId: 't',
+        taskSeq: 1,
+        delegationId: 'd',
+        phase: 'started',
+        text: 'x',
+      },
     ]) {
       expect(parseGroupEntry(bad)).toBeUndefined();
     }
