@@ -30,12 +30,22 @@ export function delegationBatches(records: readonly Delegation[]): Delegation[][
 export const batchDeliveryId = (batch: readonly Delegation[]) =>
   batch.length > 1 ? (batch[0].batchId ?? batch[0].id) : batch[0].id;
 
+/** 没送达或执行结束前没跑完的追加，写在结果末尾 */
+const missedAppends = (record: Delegation) => {
+  const missed = record.appends?.filter((item) => item.ok === false) ?? [];
+  return missed.length
+    ? `\n\n[Appended requests not handled in this run (not delivered, or the run ended first):\n${missed
+        .map((item) => `- ${item.text.length > 200 ? `${item.text.slice(0, 200)}…` : item.text}`)
+        .join('\n')}]`
+    : '';
+};
+
 export const delegationResultBody = (record: Delegation) =>
-  record.state === 'completed'
+  (record.state === 'completed'
     ? (record.result ?? '')
     : record.failure === 'check' && record.result
       ? `${record.error ?? 'check'}\n\n${record.result}`
-      : (record.error ?? record.failure ?? record.state);
+      : (record.error ?? record.failure ?? record.state)) + missedAppends(record);
 
 export function batchResultText(batch: readonly Delegation[], nameOf: NameOf): string {
   const items = batch.map(

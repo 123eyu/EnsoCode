@@ -111,6 +111,16 @@ export type DelegationTrigger = (typeof DELEGATION_TRIGGERS)[number];
 export const DELEGATION_FAILURES = ['interrupted', 'timeout', 'denied', 'error', 'check'] as const;
 export const DELEGATION_TIMEOUT_MINUTES = 240;
 export const DELEGATION_TIMEOUT_MAX_MINUTES = 1440;
+/** 一次执行最多并入的追加 */
+export const DELEGATION_APPENDS_MAX = 20;
+
+/** 并入执行中的追加；ok 缺省 = 还没跑完，true = 已在本次执行里处理，false = 未送达或执行结束前没跑完 */
+export interface DelegationAppend {
+  at: number;
+  text: string;
+  deliveryId: string;
+  ok?: boolean;
+}
 
 export function isDelegationTimeoutMinutes(value: unknown): value is number {
   return (
@@ -162,6 +172,8 @@ export interface Delegation {
   trigger?: DelegationTrigger;
   /** queued → running 的时刻 */
   startedAt?: number;
+  /** 同一发起会话对执行中的本任务追加的要求（不另开执行） */
+  appends?: DelegationAppend[];
 }
 
 export function parseDelegation(value: unknown): Delegation | undefined {
@@ -215,6 +227,21 @@ export function parseDelegation(value: unknown): Delegation | undefined {
   if (DELEGATION_TRIGGERS.includes(value.trigger as never))
     record.trigger = value.trigger as DelegationTrigger;
   if (isTime(value.startedAt)) record.startedAt = value.startedAt;
+  if (Array.isArray(value.appends)) {
+    const appends = value.appends.flatMap((item): DelegationAppend[] =>
+      isObject(item) && isTime(item.at) && typeof item.text === 'string' && isText(item.deliveryId)
+        ? [
+            {
+              at: item.at,
+              text: item.text,
+              deliveryId: item.deliveryId,
+              ...(typeof item.ok === 'boolean' ? { ok: item.ok } : {}),
+            },
+          ]
+        : []
+    );
+    if (appends.length) record.appends = appends.slice(-DELEGATION_APPENDS_MAX);
+  }
   if (value.effectivePermissions !== undefined) {
     const permissions = value.effectivePermissions;
     if (
@@ -810,6 +837,8 @@ export interface GroupTaskRun {
   finishedAt?: number;
   /** 执行人转派出去的嵌套执行（深度 2） */
   nested?: true;
+  /** 并入这次执行的追加条数 */
+  appends?: number;
 }
 
 /** userData/bot-chats/<chatId>/tasks.jsonl 的一条快照；seq 群内自增，显示为 #N */
@@ -933,5 +962,7 @@ function parseGroupTaskRun(value: unknown): GroupTaskRun | undefined {
   if (isTime(value.startedAt)) run.startedAt = value.startedAt;
   if (isTime(value.finishedAt)) run.finishedAt = value.finishedAt;
   if (value.nested === true) run.nested = true;
+  if (Number.isSafeInteger(value.appends) && Number(value.appends) > 0)
+    run.appends = Number(value.appends);
   return run;
 }

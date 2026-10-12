@@ -1241,7 +1241,7 @@ export function registerAgentHandlers(): void {
           (input.check === undefined || parseTaskCheck(input.check))
         ) {
           const check = parseTaskCheck(input.check);
-          result = service.delegate(identity.sessionId, {
+          result = service.delegateAndConfirm(identity.sessionId, {
             to: input.to,
             task: input.task,
             ...(typeof input.context === 'string' ? { context: input.context } : {}),

@@ -31,6 +31,8 @@ export type TaskGate =
       check?: TaskCheck;
       /** 原执行人接着做：失败后重试 / 待验收时追加 */
       trigger?: 'retry' | 'append';
+      /** 目标成员在本任务上排队 / 执行中的那次执行：同发起会话并入，否则排成下一次 */
+      active?: string;
       /** 目标成员在本任务的子会话（任务 × 成员），由委派服务判断能否续用 */
       session?: string;
       returnReason?: string;
@@ -100,6 +102,7 @@ function runOf(record: Delegation): GroupTaskRun {
     ...(record.startedAt !== undefined ? { startedAt: record.startedAt } : {}),
     ...(record.finishedAt !== undefined ? { finishedAt: record.finishedAt } : {}),
     ...(record.depth > 1 ? { nested: true as const } : {}),
+    ...(record.appends?.length ? { appends: record.appends.length } : {}),
   };
 }
 
@@ -546,12 +549,13 @@ export class GroupTaskService {
         error: `Task ${ref.startsWith('#') ? ref : `#${ref}`} not found in this group.`,
       };
     const session = targetBotId ? this.sessionOf(task, targetBotId) : undefined;
-    const pass = (trigger?: 'retry' | 'append'): TaskGate => ({
+    const pass = (trigger?: 'retry' | 'append', active?: string): TaskGate => ({
       ok: true,
       taskId: task.id,
       seq: task.seq,
       ...pending(task.check),
       ...(trigger ? { trigger } : {}),
+      ...(active ? { active } : {}),
       ...(session ? { session } : {}),
       ...(task.returnReason ? { returnReason: task.returnReason } : {}),
     });
@@ -565,6 +569,16 @@ export class GroupTaskService {
       if (stalledTaskRun(task))
         return pass(targetBotId === task.assigneeBotId ? 'retry' : undefined);
       if (task.status === 'review' && targetBotId === task.assigneeBotId) return pass('append');
+      const current = task.delegationId
+        ? this.deps.delegations?.().find((record) => record.id === task.delegationId)
+        : undefined;
+      if (
+        task.status === 'doing' &&
+        current &&
+        isActiveDelegation(current) &&
+        current.targetBotId === targetBotId
+      )
+        return pass('append', current.id);
     }
     return { ok: false, error: busy(task, this) };
   }

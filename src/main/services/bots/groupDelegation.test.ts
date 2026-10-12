@@ -29,7 +29,8 @@ function fixture(
   names = ['林经理', '阿后'],
   classifyMemberTask?: MemberTaskClassifier,
   withTasks = false,
-  sessionMessages?: (conversationId: string) => Promise<readonly ProjectedMessage[]>
+  sessionMessages?: (conversationId: string) => Promise<readonly ProjectedMessage[]>,
+  minuteMs?: number
 ) {
   const bots = new BotStore(join(root, 'bots'));
   // 全员只读：本文件只验证委派接力与回传，工作区写锁见 botSessionHost.lock.test
@@ -108,6 +109,7 @@ function fixture(
       host,
       store,
       emit: () => {},
+      ...(minuteMs ? { minuteMs } : {}),
       ...(tasks ? { tasks } : {}),
       ...(sessionMessages ? { sessionMessages } : {}),
       deliverGroupResult: async (record, text, deliveryId) =>
@@ -788,5 +790,427 @@ it('执行失败后群里开了新对话：界面重试仍接原任务会话，�
   expect(task1(f)).toMatchObject({ status: 'review', assigneeBotId: f.hou });
   expect(f.to(fresh).at(-1)?.text).toContain(`<delegation-result id="${retried.delegationId}"`);
   f.delegations.dispose();
+  f.groups.dispose();
+});
+
+/** 群主在同一会话里开下一轮（人类再发一句） */
+async function nextBossTurn(f: ReturnType<typeof fixture>, text = '再补一句') {
+  await f.groups.send(f.chat.id, text, { deliveryId: `human-${Math.random()}` });
+  await settle();
+  const boss = f.conversation(f.lin);
+  f.start(boss);
+  return boss;
+}
+const resultsTo = (f: ReturnType<typeof fixture>, boss: string) =>
+  f.to(boss).filter((prompt) => prompt.text.includes('<delegation-result'));
+
+it('追加插入：同一发起会话给执行中的同任务同成员追加 → steer 进原执行，不建新记录，结果只回一次到最近一轮', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, sent, child } = await handOver(f);
+  const firstBatch = latest(f).batchId;
+  expect(await nextBossTurn(f)).toBe(boss);
+  const pending = f.delegations.delegateAndConfirm(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '顺便把 hover 也改了',
+    keep: true,
+  });
+  await settle();
+  const steer = f.to(child).at(-1)!;
+  expect(steer.deliveryId).not.toBe(sent.delegationId);
+  expect(steer.text).toContain(`<delegation-task id="${sent.delegationId}"`);
+  expect(steer.text).toContain('trigger="append"');
+  expect(steer.text).toContain('顺便把 hover 也改了');
+  f.observe(child, { type: 'delivery-settled', deliveryId: steer.deliveryId });
+  expect(await pending).toEqual({
+    ok: true,
+    delegationId: sent.delegationId,
+    taskId: '#1',
+    merged: true,
+    delivery: 'accepted',
+  });
+  expect(f.delegations.list()).toHaveLength(1);
+  const record = latest(f);
+  expect(record).toMatchObject({
+    state: 'running',
+    keep: true,
+    appends: [{ text: '顺便把 hover 也改了', deliveryId: steer.deliveryId }],
+  });
+  expect(record.batchId).toBe(f.host.turnKey(boss));
+  expect(record.batchId).not.toBe(firstBatch);
+  f.reply(boss, '已追加');
+  await settle();
+  f.reply(child, '按钮和 hover 都改好了');
+  await settle();
+  expect(latest(f)).toMatchObject({ state: 'completed', appends: [{ ok: true }] });
+  expect(task1(f)).toMatchObject({
+    status: 'review',
+    runs: [{ id: sent.delegationId, state: 'completed', appends: 1 }],
+  });
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  expect(resultsTo(f, boss)[0].text).toContain('按钮和 hover 都改好了');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('追加期限：到期时刻取较晚者，各自按成员上限截断；排队中只改期限、开工才起算', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  f.host.setMaxRunningTurns(1);
+  const boss = await bossTurn(f);
+  const sent = f.delegations.delegate(boss, { to: '阿后', task: '修复', deadlineMinutes: 30 });
+  if (!sent.ok) throw new Error(sent.error);
+  await settle();
+  expect(latest(f)).toMatchObject({ state: 'queued', timeoutMinutes: 30 });
+  expect(
+    f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '短一点', deadlineMinutes: 5 })
+  ).toMatchObject({ merged: true });
+  expect(latest(f)).toMatchObject({ state: 'queued', timeoutMinutes: 30 });
+  expect(
+    f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '长一点', deadlineMinutes: 999 })
+  ).toMatchObject({ merged: true, warning: expect.stringContaining('240') });
+  expect(latest(f)).toMatchObject({ state: 'queued', timeoutMinutes: 240 });
+  expect(latest(f)).not.toHaveProperty('startedAt');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('追加期限（执行中）：max(原 startedAt + 期限, 现在 + 新期限)', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const sent = f.delegations;
+  const { boss } = await handOver(f);
+  const before = latest(f);
+  expect(before.timeoutMinutes).toBe(240);
+  await nextBossTurn(f);
+  expect(
+    sent.delegate(boss, { to: '阿后', taskId: '#1', task: '小改', deadlineMinutes: 10 })
+  ).toMatchObject({
+    merged: true,
+  });
+  expect(latest(f).timeoutMinutes).toBe(240);
+  expect(latest(f).startedAt).toBe(before.startedAt);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('排队中追加 + 同一轮连派两次：第二次并入第一次，回执 deferred；原任务开工后追加跟进，结果只回一次', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  f.tasks!.tool(f.chat.id, f.lin, { action: 'add', title: '修复登录页' });
+  f.host.setMaxRunningTurns(1);
+  const boss = await bossTurn(f);
+  const [first, second] = await Promise.all([
+    f.delegations.delegateAndConfirm(boss, { to: '阿后', taskId: '#1', task: '按钮改蓝' }),
+    f.delegations.delegateAndConfirm(boss, { to: '阿后', taskId: '#1', task: '还有 hover' }),
+  ]);
+  if (!first.ok) throw new Error(first.error);
+  expect(first).not.toHaveProperty('merged');
+  expect(second).toEqual({
+    ok: true,
+    delegationId: first.delegationId,
+    taskId: '#1',
+    merged: true,
+    delivery: 'deferred',
+  });
+  expect(f.delegations.list()).toHaveLength(1);
+  expect(latest(f)).toMatchObject({ state: 'queued', appends: [{ text: '还有 hover' }] });
+  const child = f.child(first.delegationId);
+  expect(f.to(child)).toEqual([]);
+  f.reply(boss, '已安排');
+  await settle();
+  expect(f.to(child).map((prompt) => prompt.deliveryId)[0]).toBe(first.delegationId);
+  f.start(child);
+  await settle();
+  // 追加跟在原任务后：开工后 steer 进同一回合或排成下一回合，都归这次执行
+  const append = latest(f).appends![0].deliveryId;
+  if (f.to(child).at(-1)?.deliveryId === append)
+    f.observe(child, { type: 'delivery-settled', deliveryId: append });
+  f.reply(child, '按钮好了');
+  await settle();
+  if (latest(f).state === 'running') {
+    f.start(child);
+    f.reply(child, 'hover 也好了');
+    await settle();
+  }
+  expect(latest(f)).toMatchObject({ state: 'completed', appends: [{ ok: true }] });
+  expect(f.to(child).filter((prompt) => prompt.deliveryId === append)).toHaveLength(1);
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('回合收尾时追加被 deferred：原回合结束不结算，追加跑完的回合才结算，结果只回一次', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, sent, child } = await handOver(f);
+  await nextBossTurn(f);
+  const pending = f.delegations.delegateAndConfirm(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '还有 hover',
+  });
+  await settle();
+  const append = f.to(child).at(-1)!.deliveryId!;
+  f.observe(child, { type: 'delivery-deferred', deliveryId: append });
+  expect(await pending).toMatchObject({ merged: true, delivery: 'deferred' });
+  f.reply(boss, '已追加');
+  await settle();
+  f.reply(child, '按钮好了');
+  await settle();
+  expect(latest(f)).toMatchObject({ id: sent.delegationId, state: 'running' });
+  expect(task1(f).status).toBe('doing');
+  expect(resultsTo(f, boss)).toHaveLength(0);
+  // 追加改排成下一回合
+  expect(f.to(child).at(-1)).toMatchObject({ deliveryId: append });
+  f.start(child);
+  f.reply(child, 'hover 也好了');
+  await settle();
+  expect(latest(f)).toMatchObject({
+    state: 'completed',
+    result: 'hover 也好了',
+    appends: [{ ok: true }],
+  });
+  expect(f.delegations.list()).toHaveLength(1);
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('重复投递：同一追加再发一次不重复执行，返回同一回执', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  await nextBossTurn(f);
+  const input = { to: '阿后', taskId: '#1', task: '还有 hover' };
+  const once = f.delegations.delegateAndConfirm(boss, input);
+  await settle();
+  const twice = f.delegations.delegateAndConfirm(boss, input);
+  await settle();
+  const steers = f.to(child).filter((prompt) => prompt.text.includes('还有 hover'));
+  expect(steers).toHaveLength(1);
+  f.observe(child, { type: 'delivery-settled', deliveryId: steers[0].deliveryId });
+  expect(await once).toMatchObject({ merged: true, delivery: 'accepted' });
+  expect(await twice).toMatchObject({ merged: true, delivery: 'accepted' });
+  expect(latest(f).appends).toHaveLength(1);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('已失败的追加不挂住执行：steer 被拒记 ok=false 并写进结果，原回合结束照常结算', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  await nextBossTurn(f);
+  const pending = f.delegations.delegateAndConfirm(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '还有 hover',
+  });
+  await settle();
+  const append = f.to(child).at(-1)!.deliveryId!;
+  f.observe(child, { type: 'delivery-rejected', deliveryId: append });
+  expect(await pending).toMatchObject({ merged: true, delivery: 'failed' });
+  expect(latest(f)).toMatchObject({ state: 'running', appends: [{ ok: false }] });
+  // 没送达的同一追加可以重发，重发仍失败也不挂住执行
+  const resend = f.delegations.delegateAndConfirm(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '还有 hover',
+  });
+  await settle();
+  expect(f.to(child).filter((prompt) => prompt.deliveryId === append)).toHaveLength(2);
+  expect(latest(f).appends).toEqual([expect.objectContaining({ deliveryId: append })]);
+  expect(latest(f).appends![0]).not.toHaveProperty('ok');
+  f.observe(child, { type: 'delivery-rejected', deliveryId: append });
+  expect(await resend).toMatchObject({ merged: true, delivery: 'failed' });
+  f.reply(boss, '好');
+  await settle();
+  f.reply(child, '按钮好了');
+  await settle();
+  expect(latest(f)).toMatchObject({ state: 'completed', result: '按钮好了' });
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  expect(resultsTo(f, boss)[0].text).toContain('还有 hover');
+  expect(f.host.isBusy(child)).toBe(false);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('忙不结算有上限：到期强制结算，没跑完的追加记 ok=false 并在结果里写明', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true, undefined, 40);
+  const { boss, child } = await handOver(f);
+  await nextBossTurn(f);
+  f.delegations.delegate(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '还有 hover',
+    deadlineMinutes: 1,
+  });
+  await settle();
+  const append = f.to(child).at(-1)!.deliveryId!;
+  f.observe(child, { type: 'delivery-deferred', deliveryId: append });
+  f.reply(boss, '好');
+  await settle();
+  f.reply(child, '按钮好了');
+  await settle();
+  expect(latest(f).state).toBe('running');
+  // 追加回合开了头却迟迟不结束
+  f.start(child);
+  await new Promise((resolve) => setTimeout(resolve, 40 * 240 + 50));
+  await settle();
+  expect(latest(f)).toMatchObject({
+    state: 'completed',
+    result: '按钮好了',
+    appends: [{ ok: false }],
+  });
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  expect(resultsTo(f, boss)[0].text).toContain('还有 hover');
+  f.delegations.dispose();
+  f.groups.dispose();
+}, 20_000);
+
+it('执行结束后才到的追加：开新一次执行（来源追加），不并入已结束的执行', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, sent, child } = await handOver(f);
+  f.reply(child, '改好了');
+  await settle();
+  await nextBossTurn(f);
+  const again = await f.delegations.delegateAndConfirm(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '还有 hover',
+  });
+  if (!again.ok) throw new Error(again.error);
+  expect(again).not.toHaveProperty('merged');
+  expect(again.delegationId).not.toBe(sent.delegationId);
+  expect(latest(f)).toMatchObject({ trigger: 'append', childConversationId: child });
+  expect(f.delegations.list()[0]).not.toHaveProperty('appends');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('发起会话不同（群里点了新对话）：不插入，排成下一次执行，等当前执行结束再开工', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  await f.groups.send(f.chat.id, '安排一下', { deliveryId: 'human-1' });
+  await settle();
+  const boss = f.conversation(f.lin);
+  f.start(boss);
+  const sent = f.delegations.delegate(boss, { to: '阿后', task: '修复登录页按钮', keep: true });
+  if (!sent.ok) throw new Error(sent.error);
+  await settle();
+  const child = f.child(sent.delegationId);
+  f.persist(child);
+  f.start(child);
+  f.reply(boss, '已安排');
+  await settle();
+  f.delegations.startOver(f.chat.id);
+  f.host.resetSessions(f.chat.id);
+  const fresh = await nextBossTurn(f);
+  expect(fresh).not.toBe(boss);
+  const next = await f.delegations.delegateAndConfirm(fresh, {
+    to: '阿后',
+    taskId: '#1',
+    task: '还有 hover',
+  });
+  if (!next.ok) throw new Error(next.error);
+  expect(next).not.toHaveProperty('merged');
+  expect(next.delegationId).not.toBe(sent.delegationId);
+  expect(latest(f)).toMatchObject({
+    state: 'queued',
+    trigger: 'append',
+    childConversationId: child,
+    parentConversationId: fresh,
+  });
+  expect(f.delegations.list()[0]).not.toHaveProperty('appends');
+  // 新会话再追加：并入它自己排着的那次，不再多排一次
+  expect(
+    await f.delegations.delegateAndConfirm(fresh, {
+      to: '阿后',
+      taskId: '#1',
+      task: '再加个 focus',
+    })
+  ).toMatchObject({ merged: true, delegationId: next.delegationId, delivery: 'deferred' });
+  expect(f.delegations.list()).toHaveLength(2);
+  expect(f.to(child).filter((prompt) => /还有 hover|再加个 focus/.test(prompt.text))).toEqual([]);
+  // 运行中的状态事件不能把排着的下一次执行提前算开工
+  f.delegations.observeRunning(child);
+  expect(latest(f).state).toBe('queued');
+  f.reply(child, '按钮好了');
+  await settle();
+  expect(f.delegations.list()[0]).toMatchObject({ state: 'completed' });
+  const [run, extra] = f.to(child).slice(-2);
+  expect(run).toMatchObject({ deliveryId: next.delegationId });
+  expect(run.text).toContain('trigger="append"');
+  expect(extra.text).toContain('再加个 focus');
+  f.start(child);
+  expect(latest(f).state).toBe('running');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('换批次：batchId 转到最近一轮，keep 取并集；停掉最近一轮只取消没有 keep 的', async () => {
+  const f = fixture(['林经理', '阿后', '小三'], undefined, true);
+  await f.groups.send(f.chat.id, '安排一下', { deliveryId: 'human-1' });
+  await settle();
+  const boss = f.conversation(f.lin);
+  f.start(boss);
+  const a = f.delegations.delegate(boss, { to: '阿后', task: '活 A', keep: true });
+  const b = f.delegations.delegate(boss, { to: '小三', task: '活 B' });
+  if (!a.ok || !b.ok) throw new Error('delegate');
+  await settle();
+  for (const id of [a.delegationId, b.delegationId]) f.start(f.child(id));
+  f.reply(boss, '已安排');
+  await settle();
+  await nextBossTurn(f);
+  const turn = f.host.turnKey(boss);
+  expect(
+    f.delegations.delegate(boss, { to: '阿后', taskId: a.taskId!, task: 'A 追加' })
+  ).toMatchObject({
+    merged: true,
+  });
+  expect(
+    f.delegations.delegate(boss, { to: '小三', taskId: b.taskId!, task: 'B 追加' })
+  ).toMatchObject({
+    merged: true,
+  });
+  const byId = (id: string) => f.delegations.list().find((record) => record.id === id)!;
+  expect(byId(a.delegationId)).toMatchObject({ batchId: turn, keep: true });
+  expect(byId(b.delegationId)).toMatchObject({ batchId: turn });
+  expect(byId(b.delegationId)).not.toHaveProperty('keep');
+  await f.host.stopTurn(f.chat.id, f.lin);
+  await settle();
+  expect(byId(a.delegationId).state).toBe('running');
+  expect(byId(b.delegationId).state).toBe('canceled');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('重启后恢复：未跑完的追加记 ok=false，batch / keep 已落盘，结果按最近一轮只回一次', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  await nextBossTurn(f);
+  f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '还有 hover', keep: true });
+  await settle();
+  const append = f.to(child).at(-1)!.deliveryId!;
+  f.observe(child, { type: 'delivery-deferred', deliveryId: append });
+  const turn = f.host.turnKey(boss);
+  f.reply(boss, '好');
+  await settle();
+  f.reply(child, '按钮好了');
+  await settle();
+  f.delegations.dispose();
+  const restarted = f.makeDelegations();
+  await settle();
+  expect(restarted.list()).toHaveLength(1);
+  expect(restarted.list()[0]).toMatchObject({
+    state: 'failed',
+    failure: 'interrupted',
+    batchId: turn,
+    keep: true,
+    appends: [{ deliveryId: append, ok: false }],
+  });
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  expect(resultsTo(f, boss)[0].text).toContain('还有 hover');
+  f.start(boss);
+  await settle();
+  restarted.dispose();
+  const again = f.makeDelegations();
+  await settle();
+  expect(resultsTo(f, boss)).toHaveLength(1);
+  again.dispose();
   f.groups.dispose();
 });

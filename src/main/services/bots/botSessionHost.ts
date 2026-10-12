@@ -293,6 +293,33 @@ export class BotSessionHost {
     this.sentListeners.add(listener);
     return () => this.sentListeners.delete(listener);
   }
+  private readonly deferredListeners = new Set<
+    (event: { conversationId: string; deliveryId: string }) => void
+  >();
+
+  /** worker 回合收尾时没收下的插话：已改排成该会话的下一轮 */
+  onDeliveryDeferred(
+    listener: (event: { conversationId: string; deliveryId: string }) => void
+  ): () => void {
+    this.deferredListeners.add(listener);
+    return () => this.deferredListeners.delete(listener);
+  }
+
+  /** 投递在本宿主排队（未发给 worker） */
+  deliveryQueued(conversationId: string, deliveryId: string): boolean {
+    return this.queue.some(
+      (item) => item.conversationId === conversationId && item.deliveryId === deliveryId
+    );
+  }
+
+  /** 会话还有排队或等回执的投递（不看当前回合） */
+  hasPendingDeliveries(conversationId: string): boolean {
+    return (
+      [...this.pendingSteers.keys(), ...this.queue].some(
+        (item) => item.conversationId === conversationId
+      ) || [...this.preparing].some((item) => item.conversationId === conversationId)
+    );
+  }
   private readonly discardListeners = new Set<
     (scope: { chatId?: string; botId?: string; conversationId?: string }) => void
   >();
@@ -1064,6 +1091,8 @@ export class BotSessionHost {
           this.deliveries.get(id)?.delete(event.deliveryId);
           delivery.queueIfBusy = true;
           this.enqueue(delivery);
+          for (const listener of this.deferredListeners)
+            listener({ conversationId: id, deliveryId: event.deliveryId });
         } else {
           this.finish(id, undefined, false, 'steer-rejected', '', event.deliveryId);
           this.pump();
@@ -2050,6 +2079,7 @@ export class BotSessionHost {
     this.listeners.clear();
     this.discardListeners.clear();
     this.sentListeners.clear();
+    this.deferredListeners.clear();
     this.startedListeners.clear();
     this.deliveries.clear();
     this.modelNotices.clear();
