@@ -3444,3 +3444,88 @@ describe('子代理按 runId / agentId 指代的操作行', () => {
     expect(same).toMatchObject({ summary: 'x' });
   });
 });
+
+describe('buildTimeline runDividers', () => {
+  const at = (message: ProjectedMessage, timestamp: number): ProjectedMessage => ({
+    ...message,
+    timestamp,
+  });
+  const reply = (text: string, timestamp: number): ProjectedMessage => ({
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    stopReason: 'stop',
+    timestamp,
+  });
+  const mark = (n: number, time: number) => ({ key: `run:${n}`, at: time, text: `run ${n}` });
+  const shape = (items: TimelineItem[]) =>
+    items.map((item) => (item.kind === 'divider' ? item.text : item.kind));
+
+  it('每次执行的分隔线放在开工后的第一行前；开工前一刻送达的任务消息归本次执行', () => {
+    const items = buildTimeline(
+      [at(user('task'), 100), reply('a', 105), at(user('rework'), 199), reply('b', 210)],
+      false,
+      [],
+      undefined,
+      { runDividers: [mark(1, 101), mark(2, 201)] }
+    );
+    expect(shape(items)).toEqual(['run 1', 'user', 'text', 'run 2', 'user', 'text']);
+  });
+
+  it('重试不发新消息时分隔线落在续跑输出前；上次没有输出也不抢走上次的任务消息', () => {
+    expect(
+      shape(
+        buildTimeline(
+          [at(user('task'), 100), reply('a', 105), reply('b', 300)],
+          false,
+          [],
+          undefined,
+          {
+            runDividers: [mark(1, 101), mark(2, 290)],
+          }
+        )
+      )
+    ).toEqual(['run 1', 'user', 'text', 'run 2', 'text']);
+    expect(
+      shape(
+        buildTimeline([at(user('task'), 100), reply('b', 300)], false, [], undefined, {
+          runDividers: [mark(1, 101), mark(2, 290)],
+        })
+      )
+    ).toEqual(['run 1', 'user', 'run 2', 'text']);
+    expect(
+      shape(
+        buildTimeline(
+          [at(user('task'), 100), reply('a', 105), at(user('steer'), 150), reply('b', 60_000)],
+          false,
+          [],
+          undefined,
+          { runDividers: [mark(1, 101), mark(2, 59_000)] }
+        )
+      )
+    ).toEqual(['run 1', 'user', 'text', 'user', 'run 2', 'text']);
+  });
+
+  it('尾窗分页时开工早于已加载最早一行的执行不画分隔线；刚开工还没输出时放在末尾', () => {
+    expect(
+      shape(
+        buildTimeline(
+          [reply('a', 105), at(user('rework'), 199), reply('b', 210)],
+          false,
+          [],
+          undefined,
+          {
+            historyBaseIndex: 5,
+            runDividers: [mark(1, 101), mark(2, 201)],
+          }
+        )
+      )
+    ).toEqual(['text', 'run 2', 'user', 'text']);
+    expect(
+      shape(
+        buildTimeline([at(user('task'), 100), reply('a', 105)], false, [], undefined, {
+          runDividers: [mark(1, 101), mark(2, 400)],
+        })
+      )
+    ).toEqual(['run 1', 'user', 'text', 'run 2']);
+  });
+});

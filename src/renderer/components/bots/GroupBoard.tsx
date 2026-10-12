@@ -15,6 +15,7 @@ import {
   Trash2,
   Undo2,
   UserPlus,
+  Wrench,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -45,7 +46,7 @@ import { type TFunction, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { useBotsStore } from '@/stores/bots';
 import { isRetried } from '@/stores/bots/delegations';
-import { chatDelegationGroups, taskColumns } from '@/stores/bots/groupBoard';
+import { canRework, chatDelegationGroups, taskColumns } from '@/stores/bots/groupBoard';
 import { BotAvatar } from './BotAvatar';
 import { FieldLabel } from './BotFields';
 import { CheckBadge, DelegationCard, failureText, retryDelegation } from './DelegationCard';
@@ -116,7 +117,7 @@ export function TaskBoard({
   const delegations = useBotsStore((s) => s.delegations);
   const [editing, setEditing] = useState<GroupTask | 'new' | null>(null);
   const [deleting, setDeleting] = useState<GroupTask | null>(null);
-  const [returning, setReturning] = useState<GroupTask | null>(null);
+  const [returning, setReturning] = useState<{ task: GroupTask; rework: boolean } | null>(null);
   const byId = useMemo(() => new Map(bots.map((bot) => [bot.id, bot])), [bots]);
   const members = chat.members.flatMap((id) => {
     const bot = byId.get(id);
@@ -154,7 +155,7 @@ export function TaskBoard({
       onAccept={() =>
         void run(() => api.review({ ...ref(task), accept: true }), t('Task not updated'))
       }
-      onReturn={() => setReturning(task)}
+      onReturn={(rework) => setReturning({ task, rework })}
       onCancel={() => void run(() => api.cancel(ref(task)), t('Task not updated'))}
       onDelete={() => setDeleting(task)}
     />
@@ -207,16 +208,25 @@ export function TaskBoard({
       )}
       {returning && (
         <ReturnDialog
-          task={returning}
+          task={returning.task}
+          assignee={byId.get(returning.task.assigneeBotId ?? '')?.name ?? t('Deleted member')}
+          rework={returning.rework}
           onClose={() => setReturning(null)}
           onReturn={(reason) =>
-            api.review({ ...ref(returning), accept: false, reason }).then((result) => {
-              if (result.ok) {
-                setReturning(null);
-                void useBotsStore.getState().refreshTasks(chat.id);
-              }
-              return result.ok ? null : taskErrorText(result.error, t);
-            })
+            api
+              .review({
+                ...ref(returning.task),
+                accept: false,
+                reason,
+                ...(returning.rework ? { rework: true } : {}),
+              })
+              .then((result) => {
+                if (result.ok) {
+                  setReturning(null);
+                  void useBotsStore.getState().refreshTasks(chat.id);
+                }
+                return result.ok ? null : taskErrorText(result.error, t);
+              })
           }
         />
       )}
@@ -260,7 +270,8 @@ function TaskCard({
   onAssign: (botId: string) => void;
   onComplete: () => void;
   onAccept: () => void;
-  onReturn: () => void;
+  /** rework：原执行人在原会话返工；否则退回待办 */
+  onReturn: (rework: boolean) => void;
   onCancel: () => void;
   onDelete: () => void;
 }) {
@@ -381,10 +392,16 @@ function TaskCard({
             <Check />
             {t('Accept result')}
           </Button>
-          <Button size="xs" variant="outline" onClick={onReturn}>
+          <Button size="xs" variant="outline" onClick={() => onReturn(false)}>
             <Undo2 />
             {t('Return')}
           </Button>
+          {canRework(task) && (
+            <Button size="xs" variant="outline" onClick={() => onReturn(true)}>
+              <Wrench />
+              {t('Return for rework')}
+            </Button>
+          )}
         </div>
       )}
       <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-muted-foreground">
@@ -407,13 +424,17 @@ function TaskCard({
   );
 }
 
-/** 验收退回：必须写原因 */
+/** 验收退回：必须写原因；rework 时原执行人带着原因在原会话返工 */
 function ReturnDialog({
   task,
+  assignee,
+  rework,
   onClose,
   onReturn,
 }: {
   task: GroupTask;
+  assignee: string;
+  rework: boolean;
   onClose: () => void;
   /** 返回错误文案，成功返回 null */
   onReturn: (reason: string) => Promise<string | null>;
@@ -435,7 +456,11 @@ function ReturnDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{t('Return task #{{n}}', { n: task.seq })}</DialogTitle>
+          <DialogTitle>
+            {rework
+              ? t('Return task #{{n}} for rework', { n: task.seq })
+              : t('Return task #{{n}}', { n: task.seq })}
+          </DialogTitle>
         </DialogHeader>
         <DialogPanel className="space-y-2">
           <FieldLabel>{t('Reason for returning')}</FieldLabel>
@@ -447,7 +472,12 @@ function ReturnDialog({
             onChange={(event) => setReason(event.target.value)}
           />
           <p className="text-muted-foreground text-xs">
-            {t('The task goes back to To do with this reason and can be reassigned.')}
+            {rework
+              ? t(
+                  '{{name}} continues in the same conversation with this reason, and the result comes back for review.',
+                  { name: assignee }
+                )
+              : t('The task goes back to To do with this reason and can be reassigned.')}
           </p>
           {error && <p className="text-destructive text-sm">{error}</p>}
         </DialogPanel>
@@ -457,7 +487,7 @@ function ReturnDialog({
           </Button>
           <Button size="sm" disabled={busy} onClick={() => void submit()}>
             {busy && <Loader2 className="animate-spin" />}
-            {t('Return')}
+            {rework ? t('Return for rework') : t('Return')}
           </Button>
         </DialogFooter>
       </DialogContent>

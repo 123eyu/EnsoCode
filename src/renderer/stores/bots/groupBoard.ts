@@ -25,6 +25,11 @@ export function taskColumns(tasks: readonly GroupTask[]): Record<GroupTaskStatus
   return columns;
 }
 
+/** 退回返工：委派交付、仍有执行人的待验收任务，原执行人在原会话接着改 */
+export function canRework(task: GroupTask): boolean {
+  return task.status === 'review' && Boolean(task.delegationId && task.assigneeBotId);
+}
+
 /** 本群的例行任务（跨成员） */
 export function chatRoutines(routines: readonly BotRoutine[], chatId: string): BotRoutine[] {
   return routines

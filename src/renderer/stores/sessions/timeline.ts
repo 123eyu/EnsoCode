@@ -142,7 +142,9 @@ export type TimelineItem =
   /** 后台任务完成的合成注入消息（<background-task-update>），渲染为系统通知行 */
   | { kind: 'task-note'; key: string; summary: string; detail: string }
   /** 不进入 LLM context 的 parent/child SessionManager custom entry。 */
-  | { kind: 'session-custom'; key: string; entry: AgentSessionCustomEntry };
+  | { kind: 'session-custom'; key: string; entry: AgentSessionCustomEntry }
+  /** 带字分隔线（委派子会话的「第 N 次执行」） */
+  | { kind: 'divider'; key: string; text: string };
 
 export function formatApplyPatchOutcome(outcome: ProjectedApplyPatchOutcome): string {
   const list = (label: string, paths: string[]): string =>
@@ -1350,6 +1352,8 @@ export function buildTimeline(
     toolOutputs?: Record<string, string>;
     pendingApprovals?: readonly ApprovalRequestInfo[];
     toolStartedAt?: Record<string, number>;
+    /** 按时间插入的分隔线，at 升序 */
+    runDividers?: readonly { key: string; at: number; text: string }[];
   }
 ): TimelineItem[] {
   const historyBaseIndex = options?.historyBaseIndex ?? 0;
@@ -1408,7 +1412,46 @@ export function buildTimeline(
         : -1;
     ordered.splice(before < 0 ? ordered.length : before, 0, local);
   }
-  return appendCompactionChrome(ordered, options?.compaction, options?.compactionNoticeAt);
+  const withDividers = options?.runDividers?.length
+    ? insertDividers(
+        ordered,
+        options.runDividers,
+        (item) =>
+          item.kind === 'session-custom'
+            ? customEntryTime(item.entry)
+            : messageItemTime(item, messages, historyBaseIndex),
+        historyBaseIndex === 0
+      )
+    : ordered;
+  return appendCompactionChrome(withDividers, options?.compaction, options?.compactionNoticeAt);
+}
+
+const DIVIDER_LEAD_MS = 10_000;
+
+/**
+ * 分隔线放在 at 之后的第一行前；紧挨着、开工前 10 秒内的任务消息若在上一条分隔线之后，也归入本段
+ * （任务消息比开工时间早落盘）。尾窗没加载到 at 之前的行时，开工点在更早的页里，不画。
+ */
+function insertDividers(
+  items: TimelineItem[],
+  dividers: readonly { key: string; at: number; text: string }[],
+  timeOf: (item: TimelineItem) => number,
+  complete: boolean
+): TimelineItem[] {
+  const result = [...items];
+  // 上一条分隔线之后的首行下标；该行已归上一段
+  let floor = -1;
+  for (const divider of dividers) {
+    let index = result.findIndex((item, i) => i > floor && timeOf(item) >= divider.at);
+    if (index < 0) index = result.length;
+    if (!complete && !result.slice(0, index).some((item) => timeOf(item) < divider.at)) continue;
+    const prev = result[index - 1];
+    if (index - 1 > floor && prev.kind === 'user' && divider.at - timeOf(prev) <= DIVIDER_LEAD_MS)
+      index -= 1;
+    result.splice(index, 0, { kind: 'divider', key: divider.key, text: divider.text });
+    floor = index + 1;
+  }
+  return result;
 }
 
 /** 折叠门槛：段内非 edit 工具数达到该值才收拢 */
@@ -1421,6 +1464,7 @@ function isTurnSwallowable(item: TimelineItem): boolean {
     case 'compaction-notice':
     case 'compaction-progress':
     case 'error':
+    case 'divider':
       return false;
     default:
       return true;

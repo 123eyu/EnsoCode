@@ -2365,6 +2365,7 @@ export const zhTranslations: Record<string, string> = {
   'Resumed after reply': '回复后继续',
   Rework: '返工',
   'Sub-delegation': '转派',
+  'Run {{n}} · {{source}}': '第 {{n}} 次执行 · {{source}}',
   'Queued {{time}}': '排队 {{time}}',
   Continue: '继续',
   'Start over': '重新开始',
@@ -2644,6 +2645,10 @@ export const zhTranslations: Record<string, string> = {
   'Accept result': '验收通过',
   Return: '退回',
   'Return task #{{n}}': '退回任务 #{{n}}',
+  'Return task #{{n}} for rework': '退回返工 #{{n}}',
+  'Return for rework': '退回返工',
+  '{{name}} continues in the same conversation with this reason, and the result comes back for review.':
+    '{{name}} 会带着退回原因在原会话里接着改，改完回到待验收。',
   'Reason for returning': '退回原因',
   'Enter a reason.': '请填写原因。',
   'The task goes back to To do with this reason and can be reassigned.':

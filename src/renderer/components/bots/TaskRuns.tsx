@@ -12,7 +12,7 @@ import { DelegationBadge, failureText, useNow } from './DelegationCard';
 /** 默认只显示最近几次执行 */
 const RECENT_RUNS = 5;
 
-function triggerText(trigger: DelegationTrigger, t: TFunction): string {
+export function triggerText(trigger: DelegationTrigger, t: TFunction): string {
   switch (trigger) {
     case 'append':
       return t('Appended');

@@ -1,6 +1,12 @@
 import type { BotRoutine, Delegation, GroupTask, GroupTaskRun } from '@shared/types/bot';
 import { describe, expect, it } from 'vitest';
-import { chatDelegationGroups, chatRoutines, taskColumns, taskRunRows } from './groupBoard';
+import {
+  canRework,
+  chatDelegationGroups,
+  chatRoutines,
+  taskColumns,
+  taskRunRows,
+} from './groupBoard';
 
 const task = (seq: number, status: GroupTask['status'], updatedAt = seq): GroupTask => ({
   id: `t${seq}`,
@@ -136,5 +142,15 @@ describe('taskRunRows', () => {
     expect(done.time).toEqual({ queued: false, ms: 40 });
     expect(legacy.time).toEqual({ queued: false, ms: 30 });
     expect(canceled.time).toEqual({ queued: false, ms: 10 });
+  });
+});
+
+describe('canRework', () => {
+  it('只有委派交付、仍有执行人的待验收任务能退回返工', () => {
+    const delivered = { ...task(1, 'review'), delegationId: 'd1', assigneeBotId: 'b' };
+    expect(canRework(delivered)).toBe(true);
+    expect(canRework({ ...delivered, delegationId: undefined })).toBe(false);
+    expect(canRework({ ...delivered, assigneeBotId: undefined })).toBe(false);
+    expect(canRework({ ...delivered, status: 'doing' })).toBe(false);
   });
 });

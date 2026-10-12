@@ -228,6 +228,8 @@ function itemEqual(prev: TimelineRowProps, next: TimelineRowProps): boolean {
       return b.kind === 'compaction-progress' && a.state === b.state;
     case 'session-custom':
       return b.kind === 'session-custom' && a.entry === b.entry;
+    case 'divider':
+      return b.kind === 'divider' && a.text === b.text;
   }
 }
 
@@ -782,6 +784,14 @@ export const TimelineRow = memo(function TimelineRow({
       return <CompactionProgressRow state={item.state} />;
     case 'session-custom':
       return <SessionCustomRow entry={item.entry} />;
+    case 'divider':
+      return (
+        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          {item.text}
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      );
   }
 }, itemEqual);
 
