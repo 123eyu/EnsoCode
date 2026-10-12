@@ -229,6 +229,7 @@ import type {
 } from '@shared/types/worktree';
 import type { BotUsageOverviewResult, BotUsageSummaryResult } from '@shared/usage/botUsage';
 import type { UsageRangeDays, UsageSummaryResult } from '@shared/usage/types';
+import type { TitleBarAppearance } from '@shared/windowControls';
 import type {
   WorkspaceSearchQueryRequest,
   WorkspaceSearchQueryResult,
@@ -1127,6 +1128,10 @@ const electronAPI = {
     close: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_CLOSE),
     isMaximized: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_IS_MAXIMIZED),
     isFullScreen: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_IS_FULLSCREEN),
+    setTitleBarAppearance: (
+      appearance: TitleBarAppearance
+    ): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_TITLE_BAR_APPEARANCE, appearance),
     setTrafficLightsVisible: (visible: boolean): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_TRAFFIC_LIGHTS_VISIBLE, visible),
     openSettings: (link?: SettingsDeepLink): Promise<void> =>
