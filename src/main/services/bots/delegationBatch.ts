@@ -72,7 +72,7 @@ const stateLabel = (record: Delegation) =>
     : record.state === 'canceled'
       ? '已取消'
       : record.state === 'blocked'
-        ? '卡住了'
+        ? '已交回（缺信息）'
         : record.failure === 'timeout'
           ? '已超时'
           : record.failure === 'interrupted'
@@ -81,7 +81,7 @@ const stateLabel = (record: Delegation) =>
               ? '验收未通过'
               : '执行失败';
 
-/** 批次里还有未到终态的成员时，提示谁结束了、还在等谁 */
+/** 批次里还有未到终态的成员时，提示谁结束了、这批还在等谁；「卡住」只留给 blocked 进度行 */
 export function batchWaitingNotice(
   batch: readonly Delegation[],
   finished: Delegation,
@@ -89,7 +89,7 @@ export function batchWaitingNotice(
 ): string | null {
   const waiting = batch.filter((record) => record.id !== finished.id && isActiveDelegation(record));
   if (!waiting.length) return null;
-  return `${nameOf(finished.targetBotId)} ${stateLabel(finished)}，等待 ${waiting
+  return `${nameOf(finished.targetBotId)} ${stateLabel(finished)}，这批还在等 ${waiting
     .map((record) => nameOf(record.targetBotId))
     .join('、')}`;
 }

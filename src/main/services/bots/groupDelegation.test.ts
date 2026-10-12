@@ -305,7 +305,7 @@ it('real timeline: same-turn delegates are not relayed and the boss gets one mer
   await settle();
   expect(f.to(boss)).toHaveLength(1);
   expect(f.entries().flatMap((e) => (e.kind === 'system' ? [e.text] : []))).toEqual([
-    '小设 已完成，等待 阿全',
+    '小设 已完成，这批还在等 阿全',
   ]);
 
   f.reply(children[1], '代码完成');
