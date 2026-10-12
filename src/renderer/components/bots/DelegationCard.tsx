@@ -57,7 +57,10 @@ export function CheckBadge({ check, className }: { check: TaskCheck; className?:
   );
 }
 
-export function failureText(record: Delegation, t: TFunction): string | undefined {
+export function failureText(
+  record: Pick<Delegation, 'failure' | 'error' | 'timeoutMinutes' | 'check'>,
+  t: TFunction
+): string | undefined {
   switch (record.failure) {
     case 'interrupted':
       return t('The app restarted before this task finished. It was stopped and will not rerun.');
@@ -96,7 +99,7 @@ export function retryDelegation(id: string, t: TFunction, mode?: 'resume' | 'res
 }
 
 /** 进行中的委派每 30 秒刷新耗时 */
-function useNow(active: boolean): number {
+export function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return;

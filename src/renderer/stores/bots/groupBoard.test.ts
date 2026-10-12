@@ -1,6 +1,6 @@
-import type { BotRoutine, Delegation, GroupTask } from '@shared/types/bot';
+import type { BotRoutine, Delegation, GroupTask, GroupTaskRun } from '@shared/types/bot';
 import { describe, expect, it } from 'vitest';
-import { chatDelegationGroups, chatRoutines, taskColumns } from './groupBoard';
+import { chatDelegationGroups, chatRoutines, taskColumns, taskRunRows } from './groupBoard';
 
 const task = (seq: number, status: GroupTask['status'], updatedAt = seq): GroupTask => ({
   id: `t${seq}`,
@@ -95,5 +95,46 @@ describe('chatDelegationGroups', () => {
     expect(groups.active.map((d) => d.id)).toEqual(['q1', 'r2']);
     expect(groups.completed.map((d) => d.id)).toEqual(['c2', 'c1']);
     expect(groups.failed.map((d) => d.id)).toEqual(['x1', 'f1']);
+  });
+});
+
+describe('taskRunRows', () => {
+  const run = (id: string, createdAt: number, extra: Partial<GroupTaskRun> = {}): GroupTaskRun => ({
+    id,
+    botId: 'b',
+    trigger: 'delegate',
+    state: 'completed',
+    createdAt,
+    ...extra,
+  });
+
+  it('按发起先后排列，同时刻保持原顺序，并按 id 关联委派记录', () => {
+    const rows = taskRunRows(
+      [run('c', 30), run('a', 10), run('b1', 20), run('b2', 20)],
+      [{ id: 'a', childConversationId: 'conv-a' } as Delegation],
+      100
+    );
+    expect(rows.map((row) => row.run.id)).toEqual(['a', 'b1', 'b2', 'c']);
+    expect(rows[0].record?.childConversationId).toBe('conv-a');
+    expect(rows[1].record).toBeUndefined();
+  });
+
+  it('排队中按 createdAt 记等待时长，其余按 startedAt→finishedAt 记耗时', () => {
+    const [queued, running, done, legacy, canceled] = taskRunRows(
+      [
+        run('q', 10, { state: 'queued' }),
+        run('r', 20, { state: 'running', startedAt: 40 }),
+        run('d', 30, { startedAt: 50, finishedAt: 90 }),
+        run('l', 40, { state: 'failed', finishedAt: 70 }),
+        run('x', 50, { state: 'canceled', finishedAt: 60 }),
+      ],
+      [],
+      100
+    );
+    expect(queued.time).toEqual({ queued: true, ms: 90 });
+    expect(running.time).toEqual({ queued: false, ms: 60 });
+    expect(done.time).toEqual({ queued: false, ms: 40 });
+    expect(legacy.time).toEqual({ queued: false, ms: 30 });
+    expect(canceled.time).toEqual({ queued: false, ms: 10 });
   });
 });

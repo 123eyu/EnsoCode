@@ -1,4 +1,10 @@
-import type { BotRoutine, Delegation, GroupTask, GroupTaskStatus } from '@shared/types/bot';
+import type {
+  BotRoutine,
+  Delegation,
+  GroupTask,
+  GroupTaskRun,
+  GroupTaskStatus,
+} from '@shared/types/bot';
 import { isActiveDelegation } from './delegations';
 
 /** 看板分栏：待办 / 进行中 / 待验收按编号，已完成 / 已取消新的在前 */
@@ -45,4 +51,31 @@ export function chatDelegationGroups(
       .filter((item) => item.state === 'failed' || item.state === 'canceled')
       .sort((a, b) => finished(b) - finished(a)),
   };
+}
+
+export interface TaskRunRow {
+  run: GroupTaskRun;
+  /** 对应委派记录（查看过程要它的子会话）；记录已清理时缺省 */
+  record?: Delegation;
+  /** queued：排队中，ms 为已等待时长；否则 ms 为执行耗时 */
+  time: { queued: boolean; ms: number };
+}
+
+/** 任务卡「历次执行」：按发起先后；排队中按 createdAt 记等待，其余按 startedAt→finishedAt 记耗时 */
+export function taskRunRows(
+  runs: readonly GroupTaskRun[],
+  delegations: readonly Delegation[],
+  now: number
+): TaskRunRow[] {
+  const records = new Map(delegations.map((item) => [item.id, item]));
+  return [...runs]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((run) => ({
+      run,
+      record: records.get(run.id),
+      time:
+        run.state === 'queued' && run.startedAt === undefined
+          ? { queued: true, ms: now - run.createdAt }
+          : { queued: false, ms: (run.finishedAt ?? now) - (run.startedAt ?? run.createdAt) },
+    }));
 }

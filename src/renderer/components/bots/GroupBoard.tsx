@@ -43,6 +43,7 @@ import { chatDelegationGroups, taskColumns } from '@/stores/bots/groupBoard';
 import { BotAvatar } from './BotAvatar';
 import { FieldLabel } from './BotFields';
 import { CheckBadge, DelegationCard } from './DelegationCard';
+import { TaskRuns } from './TaskRuns';
 
 /** 已完成 / 已取消 / 终态委派默认只显示最近几条 */
 const RECENT = 5;
@@ -96,7 +97,13 @@ function Group({
 }
 
 /** 群任务看板：按状态分组；新建、编辑、指派（以人类身份 @ 成员）、完成、验收、取消、删除 */
-export function TaskBoard({ chat }: { chat: BotChat }) {
+export function TaskBoard({
+  chat,
+  onOpenConversation,
+}: {
+  chat: BotChat;
+  onOpenConversation: (conversationId: string, title: string) => void;
+}) {
   const { t } = useI18n();
   const tasks = useBotsStore((s) => s.tasks[chat.id]);
   const bots = useBotsStore((s) => s.bots);
@@ -130,6 +137,7 @@ export function TaskBoard({ chat }: { chat: BotChat }) {
       task={task}
       bots={byId}
       members={members}
+      onOpenConversation={onOpenConversation}
       onEdit={() => setEditing(task)}
       onAssign={(botId) =>
         void run(() => api.assign({ ...ref(task), botId }), t('Task not assigned'))
@@ -224,6 +232,7 @@ function TaskCard({
   task,
   bots,
   members,
+  onOpenConversation,
   onEdit,
   onAssign,
   onComplete,
@@ -235,6 +244,7 @@ function TaskCard({
   task: GroupTask;
   bots: Map<string, BotProfile>;
   members: BotProfile[];
+  onOpenConversation: (conversationId: string, title: string) => void;
   onEdit: () => void;
   onAssign: (botId: string) => void;
   onComplete: () => void;
@@ -359,6 +369,9 @@ function TaskCard({
         <span className="flex-1" />
         <span title={t('Created by {{name}}', { name: creator })}>{stamp(task.updatedAt)}</span>
       </div>
+      {task.runs && task.runs.length > 0 && (
+        <TaskRuns runs={task.runs} bots={bots} onOpenConversation={onOpenConversation} />
+      )}
     </div>
   );
 }
