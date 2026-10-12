@@ -8,16 +8,18 @@ import { useI18n } from '@/i18n';
 import { protectedActionLabel } from '@/lib/protectedAction';
 import { toolLabel } from '@/lib/toolLabels';
 import { useBotsStore } from '@/stores/bots';
+import { formatElapsed } from '@/stores/bots/delegations';
 import { inboxSections } from '@/stores/bots/inbox';
 import type { PendingItem } from '@/stores/bots/selectors';
 import { usePendingMemoryWrites } from '@/stores/memoryReview';
 import { BotAvatar } from './BotAvatar';
 import { chatTitle } from './botText';
-import { DelegationBadge, failureText, retryDelegation } from './DelegationCard';
+import { DelegationBadge, failureText, retryDelegation, useNow } from './DelegationCard';
 import { MemoryWriteCard } from './MemoryWriteCard';
 import { RoutineAlertCard } from './RoutineCards';
 import { SessionHistoryDialog } from './SessionHistoryDialog';
 import { QuietFor } from './SilenceNote';
+import { replyToTask, TaskReply } from './TaskReply';
 
 /** 收件箱：Main 汇总的审批、提问、预算、例程、静默与中断委派，另加待批准的记忆写入 */
 export function BotInbox() {
@@ -217,7 +219,7 @@ function BudgetCard({ item, bot }: { item: BotInboxItem; bot: BotProfile | undef
   );
 }
 
-/** 缺信息卡住：在群看板的任务卡里回复解除 */
+/** 缺信息卡住：直接回复解除（成员在原会话接着做），或到看板打开任务卡 */
 function BlockedCard({
   inboxKey,
   record,
@@ -230,31 +232,49 @@ function BlockedCard({
   chatName: string;
 }) {
   const { t } = useI18n();
-  const setView = useBotsStore((s) => s.setView);
+  const openTask = useBotsStore((s) => s.openTask);
   const dismiss = useBotsStore((s) => s.dismissInbox);
+  const now = useNow(true);
   const to = bots.get(record.targetBotId);
+  const name = to?.name ?? t('Deleted member');
+  const since = record.finishedAt ?? record.blocked?.at ?? record.createdAt;
+  const waiting =
+    record.blocked?.waitFor === 'parent'
+      ? t('Waiting for {{name}} to reply', {
+          name: bots.get(record.parentBotId)?.name ?? t('Deleted member'),
+        })
+      : t('Waiting for your reply');
+  const { chatId, taskId } = record;
   return (
     <div data-slot="bot-card" className="rounded-xl border bg-card p-3">
       <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
         <BotAvatar bot={to} size="xs" />
-        <span className="text-foreground">{to?.name ?? t('Deleted member')}</span>
+        <span className="text-foreground">{name}</span>
         {chatName && <span>· {chatName}</span>}
         <DelegationBadge state={record.state} />
+        <span className="flex-1" />
+        <span>{t('Stuck for {{time}}', { time: formatElapsed(now - since) })}</span>
       </div>
-      <div className="mt-2 line-clamp-2 text-sm">{record.task}</div>
-      <div className="mt-1 text-xs">
-        {t('Blocked · needs: {{need}}', { need: record.blocked?.need ?? '' })}
+      <div className="mt-2 line-clamp-2 text-muted-foreground text-sm">{record.task}</div>
+      <div className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-xs">
+        <div className="line-clamp-4 whitespace-pre-wrap font-medium">
+          {t('Blocked · needs: {{need}}', { need: record.blocked?.need ?? '' })}
+        </div>
+        <div className="mt-0.5 text-muted-foreground">{waiting}</div>
+        {chatId && taskId && (
+          <TaskReply
+            placeholder={t('Answer {{name}}; they continue after your reply…', { name })}
+            onSend={(text) => replyToTask(chatId, taskId, text, t)}
+          />
+        )}
       </div>
       <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
         <Button size="xs" variant="ghost" onClick={() => void dismiss(inboxKey)}>
           {t('Dismiss')}
         </Button>
-        {record.chatId && (
-          <Button
-            size="xs"
-            onClick={() => record.chatId && setView({ kind: 'chat', chatId: record.chatId })}
-          >
-            {t('Go to chat')}
+        {chatId && taskId && (
+          <Button size="xs" variant="outline" onClick={() => openTask(chatId, taskId)}>
+            {t('Open task card')}
           </Button>
         )}
       </div>

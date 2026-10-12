@@ -1,10 +1,12 @@
 import type {
+  BotId,
   BotRoutine,
   Delegation,
   GroupTask,
   GroupTaskRun,
   GroupTaskStatus,
 } from '@shared/types/bot';
+import { GROUP_TASK_BLOCKED_STREAK_MAX, stalledTaskRun, taskBlock } from '@shared/types/bot';
 import { isActiveDelegation } from './delegations';
 
 /** 看板分栏：待办 / 进行中 / 待验收按编号，已完成 / 已取消新的在前 */
@@ -85,4 +87,43 @@ export function taskRunRows(
           ? { queued: true, ms: now - run.createdAt }
           : { queued: false, ms: (run.finishedAt ?? now) - (run.startedAt ?? run.createdAt) },
     }));
+}
+
+export type TaskBlockInfo =
+  | {
+      reason: 'need';
+      need: string;
+      /** 等谁回复：human = 你，否则为发起方成员 */
+      waitFor: 'human' | BotId;
+      /** 连续缺信息卡满次数，只接受人来解除 */
+      humanOnly?: true;
+      since: number;
+    }
+  | { reason: 'failed'; record?: Delegation; since: number };
+
+/** 卡住的任务：缺什么 / 失败原因、等谁、从何时起卡住；没卡住返回 undefined */
+export function taskBlockInfo(
+  task: GroupTask,
+  delegations: readonly Delegation[]
+): TaskBlockInfo | undefined {
+  const block = taskBlock(task);
+  if (!block) return undefined;
+  const record = delegations.find((item) => item.id === task.delegationId);
+  if (block.reason === 'failed') {
+    const run = stalledTaskRun(task);
+    return {
+      reason: 'failed',
+      ...(record ? { record } : {}),
+      since: run?.finishedAt ?? record?.finishedAt ?? task.updatedAt,
+    };
+  }
+  const humanOnly =
+    (task.blockedStreak?.[task.assigneeBotId ?? ''] ?? 0) >= GROUP_TASK_BLOCKED_STREAK_MAX;
+  return {
+    reason: 'need',
+    need: block.need || record?.blocked?.need || '',
+    waitFor: !humanOnly && record?.blocked?.waitFor === 'parent' ? record.parentBotId : 'human',
+    ...(humanOnly ? { humanOnly: true as const } : {}),
+    since: record?.finishedAt ?? record?.blocked?.at ?? task.updatedAt,
+  };
 }

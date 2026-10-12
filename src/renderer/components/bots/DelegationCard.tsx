@@ -150,12 +150,24 @@ export function DelegationCard({
   const actions = delegationActions(append ? 'completed' : state);
   const presence = useDelegationPresence(record);
   const active = !append && presence && isActiveDelegation(state);
+  const blocked = !append && state === 'blocked' ? record?.blocked : undefined;
+  // 卡住后同任务已有新执行（有人回复 / 重试）：不再催回复
+  const answered = useBotsStore((s) =>
+    blocked && record?.taskId
+      ? s.delegations.some(
+          (item) => item.taskId === record.taskId && item.createdAt > record.createdAt
+        )
+      : false
+  );
+  const openTask = useBotsStore((s) => s.openTask);
   const summary = append
     ? undefined
     : record
       ? state === 'completed'
         ? record.result
-        : failureText(record, t)
+        : state === 'blocked'
+          ? undefined
+          : failureText(record, t)
       : entry?.summary;
   const title = t('{{from}} → {{to}} · Delegation', {
     from: from?.name ?? t('Deleted member'),
@@ -196,6 +208,20 @@ export function DelegationCard({
           {summary}
         </div>
       )}
+      {blocked && record && (
+        <div className="mt-1.5 rounded-md bg-warning/10 px-2 py-1 text-xs">
+          <div className="line-clamp-4 whitespace-pre-wrap">
+            {t('Blocked · needs: {{need}}', { need: blocked.need })}
+          </div>
+          <div className="text-muted-foreground">
+            {answered
+              ? t('Answered; the work continues')
+              : blocked.waitFor === 'parent'
+                ? t('Waiting for {{name}} to reply', { name: from?.name ?? t('Deleted member') })
+                : t('Waiting for your reply')}
+          </div>
+        </div>
+      )}
       {record && (
         <div className="mt-2 flex justify-end gap-1.5">
           <Button
@@ -205,6 +231,17 @@ export function DelegationCard({
           >
             {t('View process')}
           </Button>
+          {blocked && !answered && record.chatId && record.taskId && (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() =>
+                record.chatId && record.taskId && openTask(record.chatId, record.taskId)
+              }
+            >
+              {t('Reply')}
+            </Button>
+          )}
           {actions.cancel && (
             <Button size="xs" variant="outline" onClick={() => cancelDelegation(record.id, t)}>
               {t('Cancel')}

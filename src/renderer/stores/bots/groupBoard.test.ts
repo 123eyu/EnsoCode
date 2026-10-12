@@ -4,6 +4,7 @@ import {
   canRework,
   chatDelegationGroups,
   chatRoutines,
+  taskBlockInfo,
   taskColumns,
   taskRunRows,
 } from './groupBoard';
@@ -152,5 +153,91 @@ describe('canRework', () => {
     expect(canRework({ ...delivered, delegationId: undefined })).toBe(false);
     expect(canRework({ ...delivered, assigneeBotId: undefined })).toBe(false);
     expect(canRework({ ...delivered, status: 'doing' })).toBe(false);
+  });
+});
+
+describe('taskBlockInfo', () => {
+  const blocked = (extra: Partial<GroupTask> = {}): GroupTask => ({
+    ...task(1, 'blocked', 50),
+    assigneeBotId: 'b',
+    delegationId: 'd1',
+    ...extra,
+  });
+  const record = (extra: Partial<Delegation> = {}) =>
+    ({
+      id: 'd1',
+      parentBotId: 'boss',
+      targetBotId: 'b',
+      state: 'blocked',
+      createdAt: 10,
+      finishedAt: 40,
+      blocked: { need: '数据库地址', waitFor: 'parent', at: 30 },
+      ...extra,
+    }) as Delegation;
+
+  it('没卡住返回 undefined', () => {
+    expect(taskBlockInfo(task(1, 'doing'), [])).toBeUndefined();
+    expect(taskBlockInfo(task(1, 'review'), [])).toBeUndefined();
+  });
+
+  it('缺信息：缺什么、等发起方回复，从本轮结束算起', () => {
+    const info = taskBlockInfo(blocked({ blockedReason: 'need', blockedNeed: '数据库地址' }), [
+      record(),
+    ]);
+    expect(info).toEqual({ reason: 'need', need: '数据库地址', waitFor: 'boss', since: 40 });
+  });
+
+  it('缺信息：等人回复；连续卡满次数后只等人', () => {
+    const need = { blockedReason: 'need' as const, blockedNeed: 'x' };
+    expect(
+      taskBlockInfo(blocked(need), [record({ blocked: { need: 'x', waitFor: 'human', at: 30 } })])
+    ).toMatchObject({ waitFor: 'human' });
+    expect(taskBlockInfo(blocked({ ...need, blockedStreak: { b: 3 } }), [record()])).toMatchObject({
+      waitFor: 'human',
+      humanOnly: true,
+    });
+  });
+
+  it('缺信息：委派记录已清理时等人，按任务更新时间算', () => {
+    expect(taskBlockInfo(blocked({ blockedReason: 'need', blockedNeed: 'x' }), [])).toEqual({
+      reason: 'need',
+      need: 'x',
+      waitFor: 'human',
+      since: 50,
+    });
+  });
+
+  it('执行失败：带上委派记录（原因），从执行结束算起', () => {
+    const failed = record({ state: 'failed', failure: 'timeout', blocked: undefined });
+    const info = taskBlockInfo(
+      blocked({
+        blockedReason: 'failed',
+        runs: [
+          {
+            id: 'd1',
+            botId: 'b',
+            trigger: 'delegate',
+            state: 'failed',
+            createdAt: 10,
+            finishedAt: 45,
+          },
+        ],
+      }),
+      [failed]
+    );
+    expect(info).toEqual({ reason: 'failed', record: failed, since: 45 });
+  });
+
+  it('执行失败（P2 旧数据：进行中 + 当前执行失败）也算卡住', () => {
+    const info = taskBlockInfo(
+      {
+        ...task(1, 'doing', 50),
+        assigneeBotId: 'b',
+        delegationId: 'd1',
+        runs: [{ id: 'd1', botId: 'b', trigger: 'delegate', state: 'failed', createdAt: 10 }],
+      },
+      []
+    );
+    expect(info).toEqual({ reason: 'failed', since: 50 });
   });
 });
