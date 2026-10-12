@@ -88,6 +88,20 @@ export function BotInbox() {
               chatName={chatName(item.chatId)}
             />
           ))}
+          {sections.blocked.length > 0 && (
+            <div className="pt-3 font-medium text-muted-foreground text-xs">
+              {t('Stuck delegated tasks')}
+            </div>
+          )}
+          {sections.blocked.map(({ item, record }) => (
+            <BlockedCard
+              key={item.key}
+              inboxKey={item.key}
+              record={record}
+              bots={byId}
+              chatName={chatName(record.chatId)}
+            />
+          ))}
           {sections.interrupted.length > 0 && (
             <div className="pt-3 font-medium text-muted-foreground text-xs">
               {t('Interrupted delegations')}
@@ -195,6 +209,51 @@ function BudgetCard({ item, bot }: { item: BotInboxItem; bot: BotProfile | undef
         </Button>
         {bot && (
           <Button size="xs" variant="outline" onClick={() => void openDirect(bot.id)}>
+            {t('Go to chat')}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 缺信息卡住：在群看板的任务卡里回复解除 */
+function BlockedCard({
+  inboxKey,
+  record,
+  bots,
+  chatName,
+}: {
+  inboxKey: string;
+  record: Delegation;
+  bots: Map<string, BotProfile>;
+  chatName: string;
+}) {
+  const { t } = useI18n();
+  const setView = useBotsStore((s) => s.setView);
+  const dismiss = useBotsStore((s) => s.dismissInbox);
+  const to = bots.get(record.targetBotId);
+  return (
+    <div data-slot="bot-card" className="rounded-xl border bg-card p-3">
+      <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
+        <BotAvatar bot={to} size="xs" />
+        <span className="text-foreground">{to?.name ?? t('Deleted member')}</span>
+        {chatName && <span>· {chatName}</span>}
+        <DelegationBadge state={record.state} />
+      </div>
+      <div className="mt-2 line-clamp-2 text-sm">{record.task}</div>
+      <div className="mt-1 text-xs">
+        {t('Blocked · needs: {{need}}', { need: record.blocked?.need ?? '' })}
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center justify-end gap-1.5">
+        <Button size="xs" variant="ghost" onClick={() => void dismiss(inboxKey)}>
+          {t('Dismiss')}
+        </Button>
+        {record.chatId && (
+          <Button
+            size="xs"
+            onClick={() => record.chatId && setView({ kind: 'chat', chatId: record.chatId })}
+          >
             {t('Go to chat')}
           </Button>
         )}

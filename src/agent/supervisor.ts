@@ -1294,7 +1294,8 @@ export class SessionSupervisor {
           command.botGroupTasks,
           command.protectedActions,
           command.botRoutines,
-          command.botWriteLock
+          command.botWriteLock,
+          command.botDelegationTask
         );
         return;
       case 'spawn-child':
@@ -1787,7 +1788,8 @@ export class SessionSupervisor {
     botGroupTasks = false,
     protectedActions = false,
     botRoutines = false,
-    botWriteLock?: { label: string; ancestors: string[] }
+    botWriteLock?: { label: string; ancestors: string[] },
+    botDelegationTask = false
   ): Promise<void> {
     const sessionId = identity.sessionId;
     const sessionEditMode = resolveEditMode(requestedEditMode, hashlineEditEnabled);
@@ -2452,7 +2454,12 @@ export class SessionSupervisor {
         ? createBrowserTools(browser).map((tool) => withNavigateApproval(gate, tool))
         : []),
       ...(memory ? createMemoryTools(memory, { language: memoryLanguage }) : []),
-      ...(delegation ? createDelegationTools(delegation, { groupTasks: botGroupTasks }) : []),
+      ...(delegation
+        ? createDelegationTools(delegation, {
+            groupTasks: botGroupTasks,
+            delegationTask: botDelegationTask,
+          })
+        : []),
       ...(delegation && botGroupTasks
         ? [createGroupTasksTool(delegation), createGroupHistoryTool(delegation)]
         : []),

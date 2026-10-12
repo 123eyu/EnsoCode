@@ -1231,6 +1231,15 @@ export function registerAgentHandlers(): void {
         } else if (op === 'send_image' && conversation?.bot) {
           result = sendImageTool(services, identity.sessionId, conversation.bot, input);
         } else if (
+          op === 'report_blocked' &&
+          typeof input.need === 'string' &&
+          (input.waitFor === undefined || input.waitFor === 'parent' || input.waitFor === 'human')
+        ) {
+          result = service.reportBlocked(identity.sessionId, {
+            need: input.need,
+            ...(input.waitFor ? { waitFor: input.waitFor } : {}),
+          });
+        } else if (
           op === 'delegate' &&
           typeof input.to === 'string' &&
           typeof input.task === 'string' &&

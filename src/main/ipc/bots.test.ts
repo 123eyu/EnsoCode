@@ -837,6 +837,22 @@ describe('群任务看板 IPC', () => {
       ok: true,
       task: { status: 'done', result: 'ok2' },
     });
+    // 任务卡回复：入参按 unknown 收窄；已完成的任务只记评论
+    for (const bad of [
+      { chatId, id },
+      { chatId, id, text: 3 },
+      { chatId, id, text: '  ' },
+      { chatId, id, text: 'x'.repeat(4001) },
+      { chatId: 'nope', id, text: 'hi' },
+    ])
+      expect(await call(IPC_CHANNELS.BOT_TASK_REPLY, bad)).toEqual({
+        ok: false,
+        error: 'invalid',
+      });
+    expect(await call(IPC_CHANNELS.BOT_TASK_REPLY, { chatId, id, text: '辛苦了' })).toMatchObject({
+      ok: true,
+      task: { status: 'done' },
+    });
   });
 
   it('移出成员时其认领中的任务退回 todo；开关关闭时列表为空、写返回 disabled', async () => {

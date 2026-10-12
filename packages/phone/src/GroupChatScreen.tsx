@@ -97,6 +97,7 @@ const DELEGATION_TEXT: Record<PairDelegationState, string> = {
   completed: '已完成',
   failed: '失败',
   canceled: '已取消',
+  blocked: '卡住了',
 };
 
 /** 一条群消息最多带几张图（整帧要压进中继 1MB 上限） */

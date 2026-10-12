@@ -17,6 +17,7 @@ export const TRANSCRIPT_LABELS = {
     completed: '已完成',
     failed: '失败',
     canceled: '已取消',
+    blocked: '卡住了',
   } satisfies Record<DelegationState, string>,
   intro: (title: string, self: string) => `你在群聊「${title}」中，你是 ${self}。群成员：`,
 } as const;
@@ -38,6 +39,7 @@ export const GROUP_STATE_LABELS = {
     review: '待验收',
     done: '已完成',
     canceled: '已取消',
+    blocked: '卡住',
   } satisfies Record<GroupTaskStatus, string>,
   more: (count: number) => `…另有 ${count} 项`,
   footer: (seq: number) =>

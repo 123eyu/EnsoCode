@@ -92,6 +92,9 @@ function fixture(
         emit: () => {},
         delegations: () => store.list(),
         rework: (input) => current?.rework(input) ?? { ok: false as const, error: 'disabled' },
+        reply: (input) => current?.reply(input) ?? { ok: false as const, error: 'disabled' },
+        interject: async (input) =>
+          current ? current.interject(input) : { ok: false as const, error: 'disabled' },
         send: (chatId, text, refs) =>
           groups.send(
             chatId,
@@ -694,11 +697,14 @@ it('执行失败：任务保留负责人；重试与群主再派同一成员都�
   f.fail(child);
   await settle();
   expect(task1(f)).toMatchObject({
-    status: 'doing',
+    status: 'blocked',
+    blockedReason: 'failed',
     assigneeBotId: f.hou,
     delegationId: sent.delegationId,
     runs: [{ state: 'failed', failure: 'error' }],
   });
+  // 执行失败只能重试 / 改派 / 取消：任务卡回复不能解除
+  expect(await f.tasks!.reply(f.chat.id, '#1', '再试试')).toMatchObject({ ok: false });
   // 界面重试：同一会话从断点续跑
   const retried = f.delegations.retry(sent.delegationId);
   if (!retried.ok) throw new Error(retried.error);
@@ -774,7 +780,8 @@ it('验收只认本次执行开始之后的证据：返工不能借上一次执�
     failure: 'check',
   });
   expect(task1(f)).toMatchObject({
-    status: 'doing',
+    status: 'blocked',
+    blockedReason: 'failed',
     assigneeBotId: f.hou,
     delegationId: rework.id,
   });
@@ -1243,7 +1250,7 @@ it('人在看板上改派：新成员这一轮附 <previous-runs>，群里只显
   });
   f.fail(child);
   await settle();
-  expect(task1(f)).toMatchObject({ status: 'doing', assigneeBotId: f.hou });
+  expect(task1(f)).toMatchObject({ status: 'blocked', assigneeBotId: f.hou });
   expect(await f.tasks!.assign(f.chat.id, '#1', f.ids[2])).toMatchObject({ ok: true });
   await settle();
   const third = f.conversation(f.ids[2]);
@@ -1260,6 +1267,257 @@ it('人在看板上改派：新成员这一轮附 <previous-runs>，群里只显
   const chat = f.chats.get(f.chat.id)!;
   expect(await f.composer.groupAppendix(chat, f.lin, human ? [human] : [])).toBe('');
   expect(f.to(boss).some((prompt) => prompt.text.includes('<previous-runs>'))).toBe(false);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+/** 执行人登记卡住并自然结束本轮 */
+async function blockedBy(f: ReturnType<typeof fixture>, child: string, need = '数据库密码') {
+  expect(f.delegations.reportBlocked(child, { need, waitFor: 'parent' })).toMatchObject({
+    ok: true,
+  });
+  f.reply(child, `前端做完了，缺${need}`);
+  await settle();
+}
+
+it('report_blocked：本轮自然结束后记 blocked，释放名额，结果 status=blocked 回给发起方；任务卡住·缺 X', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, sent, child } = await handOver(f);
+  // 挂看板任务的委派会话才挂 report_blocked，并在说明里写清只有它才算卡住
+  const spec = f.spawned.find((item) => item.conversationId === child);
+  expect(spec?.delegationTask).toBe(true);
+  expect(spec?.instructionText).toContain('Only report_blocked marks the task as blocked');
+  expect(f.spawned.find((item) => item.conversationId === boss)?.delegationTask).toBeUndefined();
+  // 不是委派子会话 / 不在执行中：拒绝
+  expect(f.delegations.reportBlocked(boss, { need: 'x' })).toMatchObject({ ok: false });
+  expect(f.delegations.reportBlocked(child, { need: '数据库密码', waitFor: 'human' })).toEqual({
+    ok: true,
+    instruction: expect.stringContaining('end your turn'),
+  });
+  // 登记后回合还在跑：不提前结算
+  expect(latest(f).state).toBe('running');
+  f.reply(child, '前端做完了，缺数据库密码');
+  await settle();
+  expect(latest(f)).toMatchObject({
+    id: sent.delegationId,
+    state: 'blocked',
+    blocked: { need: '数据库密码', waitFor: 'human' },
+    result: '前端做完了，缺数据库密码',
+  });
+  expect(f.host.isBusy(child)).toBe(false);
+  expect(task1(f)).toMatchObject({
+    status: 'blocked',
+    blockedReason: 'need',
+    blockedNeed: '数据库密码',
+    assigneeBotId: f.hou,
+    blockedStreak: { [f.hou]: 1 },
+  });
+  const results = resultsTo(f, boss);
+  expect(results).toHaveLength(1);
+  expect(results[0].text).toContain('status="blocked"');
+  expect(results[0].text).toContain('数据库密码');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('只在结果里提问、没调 report_blocked：照常交付进待验收', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { child } = await handOver(f);
+  f.reply(child, '先按 sqlite 做了。要换成 Postgres 吗？');
+  await settle();
+  expect(latest(f).state).toBe('completed');
+  expect(task1(f)).toMatchObject({ status: 'review' });
+  expect(task1(f)).not.toHaveProperty('blockedReason');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('解除卡住：群主对同成员同 taskId 再 delegate → 同一会话新执行（trigger reply），交付后清零', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  await blockedBy(f, child);
+  f.start(boss);
+  const answered = f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '密码是 x' });
+  if (!answered.ok) throw new Error(answered.error);
+  await settle();
+  expect(latest(f)).toMatchObject({
+    id: answered.delegationId,
+    trigger: 'reply',
+    childConversationId: child,
+  });
+  expect(latest(f)).not.toHaveProperty('retryOf');
+  expect(f.to(child).at(-1)?.text).toContain('task="#1" run="2" trigger="reply">\n密码是 x');
+  expect(task1(f)).toMatchObject({ status: 'doing', delegationId: answered.delegationId });
+  f.start(child);
+  f.reply(child, '好了');
+  await settle();
+  expect(task1(f)).toMatchObject({ status: 'review' });
+  expect(task1(f)).not.toHaveProperty('blockedStreak');
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('连续 3 次缺信息卡住：群主不能再代答，人在任务卡回复后同一会话接着做', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  await blockedBy(f, child, '一');
+  for (const need of ['二', '三']) {
+    f.start(boss);
+    const answered = f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '答' });
+    if (!answered.ok) throw new Error(answered.error);
+    await settle();
+    f.start(child);
+    await blockedBy(f, child, need);
+  }
+  expect(task1(f)).toMatchObject({ status: 'blocked', blockedStreak: { [f.hou]: 3 } });
+  f.start(boss);
+  expect(f.delegations.delegate(boss, { to: '阿后', taskId: '#1', task: '答' })).toMatchObject({
+    ok: false,
+    error: expect.stringContaining('only a human can answer'),
+  });
+  expect(await f.tasks!.reply(f.chat.id, '#1', '人来答：用 x')).toMatchObject({ ok: true });
+  await settle();
+  expect(latest(f)).toMatchObject({
+    trigger: 'reply',
+    childConversationId: child,
+    parentConversationId: boss,
+  });
+  expect(f.to(child).at(-1)?.text).toContain('人来答：用 x');
+  expect(task1(f)).toMatchObject({ status: 'doing' });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('人在任务卡回复解除卡住：群里开过新对话 → 结果回群主的新会话', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { boss, child } = await handOver(f);
+  await blockedBy(f, child);
+  f.start(boss);
+  f.reply(boss, '等人来答');
+  await settle();
+  f.delegations.startOver(f.chat.id);
+  f.host.resetSessions(f.chat.id);
+  expect(await f.tasks!.reply(f.chat.id, '#1', '密码是 x')).toMatchObject({ ok: true });
+  const fresh = f.conversation(f.lin);
+  expect(latest(f)).toMatchObject({
+    trigger: 'reply',
+    childConversationId: child,
+    parentConversationId: fresh,
+  });
+  await settle();
+  f.start(child);
+  f.reply(child, '好了');
+  await settle();
+  expect(task1(f)).toMatchObject({ status: 'review' });
+  expect(f.to(fresh).at(-1)?.text).toContain(`<delegation-result id="${latest(f).id}"`);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('软停止：登记卡住后 5 分钟没收尾只中止当前回合；排队的追加转成下一次执行不丢；不取消子委派；停止原因区别于人工停止', async () => {
+  const f = fixture(['林经理', '阿后', '小三'], undefined, true, undefined, 20);
+  const finished: Array<{ conversationId: string; error?: string; stopped?: true }> = [];
+  f.host.onTurnFinished((event) => finished.push(event));
+  const { boss, sent, child } = await handOver(f);
+  // 执行人这一轮转派了一个子委派
+  const nested = f.delegations.delegate(child, { to: '小三', task: '查一下配置' });
+  if (!nested.ok) throw new Error(nested.error);
+  await settle();
+  await nextBossTurn(f);
+  expect(f.delegations.reportBlocked(child, { need: '数据库密码' })).toMatchObject({ ok: true });
+  // 群主追加（steer 进当前回合，还没被 worker 收下）
+  const pending = f.delegations.delegateAndConfirm(boss, {
+    to: '阿后',
+    taskId: '#1',
+    task: '密码是 x',
+  });
+  await settle();
+  const append = f.to(child).at(-1)!.deliveryId!;
+  await new Promise((resolve) => setTimeout(resolve, 5 * 20 + 60));
+  await settle();
+  expect(f.delegations.list().find((record) => record.id === sent.delegationId)).toMatchObject({
+    state: 'blocked',
+    blocked: { need: '数据库密码' },
+  });
+  expect(finished.find((event) => event.conversationId === child)).toMatchObject({
+    ok: false,
+    error: 'blocked-stop',
+  });
+  expect(finished.find((event) => event.conversationId === child)).not.toHaveProperty('stopped');
+  // 子委派不级联取消
+  expect(f.delegations.list().find((record) => record.id === nested.delegationId)?.state).not.toBe(
+    'canceled'
+  );
+  // 追加转成下一次执行，重新投给同一会话
+  const next = latest(f);
+  expect(next).toMatchObject({
+    trigger: 'append',
+    childConversationId: child,
+    parentConversationId: boss,
+    appends: [{ deliveryId: append }],
+  });
+  expect(next.appends?.[0]).not.toHaveProperty('ok');
+  expect(f.to(child).at(-1)).toMatchObject({ deliveryId: append });
+  f.start(child);
+  expect(await pending).toMatchObject({ merged: true, delivery: 'accepted' });
+  f.reply(child, '拿到密码，做完了');
+  await settle();
+  expect(f.delegations.list().find((record) => record.id === next.id)).toMatchObject({
+    state: 'completed',
+    appends: [{ ok: true }],
+  });
+  expect(task1(f)).toMatchObject({ status: 'review' });
+  f.delegations.dispose();
+  f.groups.dispose();
+}, 20_000);
+
+it('软停止：执行中人在任务卡插的话还没被收下 → 转成下一次执行重新投递，不丢', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true, undefined, 20);
+  const { sent, child } = await handOver(f);
+  expect(f.delegations.reportBlocked(child, { need: '数据库密码' })).toMatchObject({ ok: true });
+  expect(await f.tasks!.reply(f.chat.id, '#1', '密码在 1Password 里')).toMatchObject({ ok: true });
+  await settle();
+  const steer = f.to(child).at(-1)!;
+  expect(steer.text).toContain('密码在 1Password 里');
+  await new Promise((resolve) => setTimeout(resolve, 5 * 20 + 60));
+  await settle();
+  expect(f.delegations.list().find((record) => record.id === sent.delegationId)?.state).toBe(
+    'blocked'
+  );
+  const next = latest(f);
+  expect(next).toMatchObject({ trigger: 'append', state: 'queued', childConversationId: child });
+  expect(f.to(child).at(-1)).toMatchObject({ deliveryId: steer.deliveryId });
+  f.start(child);
+  f.reply(child, '用上了，做完');
+  await settle();
+  expect(f.delegations.list().find((record) => record.id === next.id)).toMatchObject({
+    state: 'completed',
+    result: '用上了，做完',
+  });
+  expect(task1(f)).toMatchObject({ status: 'review' });
+  f.delegations.dispose();
+  f.groups.dispose();
+}, 20_000);
+
+it('卡住转出的下一次执行：排队的投递都没跑起来就记失败，不会一直占着', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const { child } = await handOver(f);
+  expect(f.delegations.reportBlocked(child, { need: '数据库密码' })).toMatchObject({ ok: true });
+  expect(await f.tasks!.reply(f.chat.id, '#1', '密码在 1Password 里')).toMatchObject({ ok: true });
+  await settle();
+  // 插话改排到下一轮（worker 回合收尾时没收下）
+  f.observe(child, { type: 'delivery-deferred', deliveryId: f.to(child).at(-1)!.deliveryId });
+  f.reply(child, '缺密码，先停在这');
+  await settle();
+  const next = latest(f);
+  expect(next).toMatchObject({ trigger: 'append', state: 'queued' });
+  // 排队的投递被撤掉（没开跑）
+  await f.host.abortConversation(child);
+  await settle();
+  expect(f.delegations.list().find((record) => record.id === next.id)).toMatchObject({
+    state: 'failed',
+    failure: 'error',
+  });
   f.delegations.dispose();
   f.groups.dispose();
 });

@@ -5,6 +5,7 @@ import type { ProjectedMessage } from '../../../shared/types/agent';
 import {
   type BotChat,
   type Delegation,
+  GROUP_TASK_BLOCKED_STREAK_MAX,
   GROUP_TASK_RUNS_MAX,
   GROUP_TASK_TEXT_MAX,
   GROUP_TASK_TITLE_MAX,
@@ -14,6 +15,7 @@ import {
   parseTaskCheck,
   stalledTaskRun,
   type TaskCheck,
+  taskBlock,
 } from '../../../shared/types/bot';
 import type { BotEvent, BotSendResult } from '../../../shared/types/botIpc';
 import type { BotStore } from './botStore';
@@ -31,8 +33,8 @@ export type TaskGate =
       taskId: string;
       seq: number;
       check?: TaskCheck;
-      /** 原执行人接着做：失败后重试 / 待验收时追加 */
-      trigger?: 'retry' | 'append';
+      /** 原执行人接着做：失败后重试 / 待验收时追加 / 缺信息卡住后答复 */
+      trigger?: 'retry' | 'append' | 'reply';
       /** 目标成员在本任务上排队 / 执行中的那次执行：同发起会话并入，否则排成下一次 */
       active?: string;
       /** 目标成员在本任务的子会话（任务 × 成员），由委派服务判断能否续用 */
@@ -60,6 +62,17 @@ interface Deps {
     actor: TaskActor;
     reason: string;
   }) => { ok: true } | { ok: false; error: string };
+  /** 人在任务卡回复缺信息卡住的任务：在原执行人的任务会话里新开一次执行 */
+  reply?: (input: {
+    chatId: string;
+    delegationId: string;
+    text: string;
+  }) => { ok: true } | { ok: false; error: string };
+  /** 人在任务卡回复执行中的任务：插入当前执行 */
+  interject?: (input: {
+    delegationId: string;
+    text: string;
+  }) => Promise<{ ok: true } | { ok: false; error: string }>;
   now?: () => number;
 }
 
@@ -83,6 +96,16 @@ const pending = (check: TaskCheck | undefined) =>
   check ? { check: { kind: check.kind, text: check.text } } : {};
 /** 进入 done 时清掉上次退回原因 */
 const settled = ({ returnReason: _reason, ...task }: GroupTask): GroupTask => task;
+/** 离开卡住：清掉原因（连续次数保留） */
+const unblocked = ({ blockedReason: _r, blockedNeed: _n, ...task }: GroupTask): GroupTask => task;
+/** 人直接完成 / 取消：卡住原因与连续次数一并清掉 */
+const cleared = ({ blockedStreak: _s, ...task }: GroupTask): GroupTask => unblocked(task);
+/** 交付：该成员的连续卡住次数清零 */
+function streakCleared(task: GroupTask, botId: string): GroupTask {
+  const { blockedStreak, ...rest } = task;
+  const { [botId]: _cleared, ...others } = blockedStreak ?? {};
+  return Object.keys(others).length ? { ...rest, blockedStreak: others } : rest;
+}
 const FAILURE_TEXT: Record<NonNullable<Delegation['failure']>, string> = {
   timeout: '超时',
   interrupted: '中断',
@@ -120,8 +143,10 @@ function sameRun(a: GroupTaskRun, b: GroupTaskRun): boolean {
  * 委派 → 任务状态机（纯函数）。返回 undefined 表示不变。
  * 创建：todo，或发起人自己认领中且无委派的任务、执行失败的任务、原执行人续做的待验收任务
  * → doing / 负责人 = 目标 / 记 delegationId；
+ * 卡住的任务 → doing / 负责人 = 目标 / 记 delegationId；
  * 终态：仅当任务仍由这条委派负责（doing + 同 delegationId）——完成 → 带结果摘要，
- * 执行人即创建人直接 done，否则 review 待验收；失败 → 保留负责人与委派；取消 → 退回 todo。
+ * 执行人即创建人直接 done，否则 review 待验收；缺信息 / 失败 → 卡住，保留负责人与委派
+ * （缺信息计该成员连续次数，交付清零）；取消 → 退回 todo。
  */
 export function taskAfterDelegation(
   task: GroupTask,
@@ -136,13 +161,14 @@ export function taskAfterDelegation(
         (task.status === 'todo' ||
           (task.status === 'doing' && task.assigneeBotId === record.parentBotId))) ||
       stalledTaskRun(task) !== undefined ||
+      task.status === 'blocked' ||
       (task.status === 'review' &&
         task.assigneeBotId === record.targetBotId &&
         record.trigger !== undefined &&
         record.trigger !== 'delegate');
     if (!free) return undefined;
     return {
-      ...task,
+      ...unblocked(task),
       ...pending(task.check),
       status: 'doing',
       assigneeBotId: record.targetBotId,
@@ -157,18 +183,34 @@ export function taskAfterDelegation(
       : {};
   if (record.state === 'completed') {
     const result = delegationResultBody(record).trim().slice(0, GROUP_TASK_TEXT_MAX);
-    const next = { ...task, ...verdict, ...(result ? { result } : {}), updatedAt: now };
+    const next = {
+      ...streakCleared(task, record.targetBotId),
+      ...verdict,
+      ...(result ? { result } : {}),
+      updatedAt: now,
+    };
     return record.targetBotId === task.createdBy
       ? { ...settled(next), status: 'done' }
       : { ...next, status: 'review' };
   }
-  if (record.state === 'failed') {
-    // 失败已同步过（runs 里已是失败）：投递时间等落盘不再改任务
-    if (stalledTaskRun(task)) return undefined;
+  if (record.state === 'blocked') {
+    const streak = task.blockedStreak?.[record.targetBotId] ?? 0;
     return {
       ...task,
+      status: 'blocked',
+      blockedReason: 'need',
+      ...(record.blocked ? { blockedNeed: record.blocked.need } : {}),
+      blockedStreak: { ...task.blockedStreak, [record.targetBotId]: streak + 1 },
+      updatedAt: now,
+    };
+  }
+  if (record.state === 'failed') {
+    return {
+      ...unblocked(task),
       ...verdict,
       ...(record.failure === 'check' && record.error ? { result: record.error } : {}),
+      status: 'blocked',
+      blockedReason: 'failed',
       updatedAt: now,
     };
   }
@@ -184,6 +226,9 @@ export function taskAfterDelegation(
 
 /** 群任务看板：成员工具、人类 UI 与委派联动共用；每次变更推 tasks 事件，关键变更写 system 时间线 */
 export class GroupTaskService {
+  /** 人在任务卡答复卡住的任务、新执行正在落盘：sync 把答复写进同一行 */
+  private humanReply?: { taskId: string; text: string };
+
   constructor(private readonly deps: Deps) {}
 
   list(chatId: string): GroupTask[] {
@@ -324,7 +369,7 @@ export class GroupTaskService {
       this.write(
         chatId,
         {
-          ...settled(task),
+          ...cleared(settled(task)),
           ...passed,
           status: 'done',
           ...(text ? { result: text } : {}),
@@ -368,16 +413,25 @@ export class GroupTaskService {
         ok: false,
         error: `Task #${task.seq} is being handled by a delegation; the delegator can cancel it with check_delegation.`,
       };
-    if (actor !== 'human' && task.createdBy !== actor && task.assigneeBotId !== actor)
+    // 卡住的任务：执行人自己不能取消，创建人 / 委派人可以
+    if (
+      actor !== 'human' &&
+      (task.status === 'blocked'
+        ? task.createdBy !== actor && this.delegator(task) !== actor
+        : task.createdBy !== actor && task.assigneeBotId !== actor)
+    )
       return {
         ok: false,
-        error: `Only the creator or the assignee can cancel task #${task.seq}.`,
+        error:
+          task.status === 'blocked'
+            ? `Only the creator, the delegator or a human can cancel blocked task #${task.seq}.`
+            : `Only the creator or the assignee can cancel task #${task.seq}.`,
       };
     return this.linkedAfter(
       task,
       this.write(
         chatId,
-        { ...task, status: 'canceled', updatedAt: this.now() },
+        { ...cleared(task), status: 'canceled', updatedAt: this.now() },
         `${this.name(actor)} 取消了 ${label(task)}`,
         actor
       )
@@ -478,9 +532,13 @@ export class GroupTaskService {
     if (!chat?.members.includes(botId) || !bot || bot.archivedAt !== undefined)
       return { ok: false, error: 'Member unavailable.' };
     const stalled = stalledTaskRun(task) !== undefined;
-    if (task.status === 'done' || task.status === 'canceled' || (task.delegationId && !stalled))
+    if (
+      task.status === 'done' ||
+      task.status === 'canceled' ||
+      (task.delegationId && !stalled && task.status !== 'blocked')
+    )
       return { ok: false, error: busy(task, this) };
-    const { delegationId: _delegation, ...free } = task;
+    const { delegationId: _delegation, ...free } = unblocked(task);
     const now = this.now();
     const written = this.write(chatId, {
       ...free,
@@ -504,6 +562,49 @@ export class GroupTaskService {
     if (current?.updatedAt === written.task.updatedAt && current.assigneeBotId === botId)
       this.write(chatId, { ...task, updatedAt: this.now() });
     return { ok: false, error: sent.error };
+  }
+
+  /**
+   * 任务卡回复框（人）：缺信息卡住 → 原执行人在任务会话里接着做；执行中 → 插入当前执行；
+   * 执行失败只能重试 / 改派 / 取消；其他状态只记评论
+   */
+  async reply(chatId: string, ref: string, input: string): Promise<TaskResult> {
+    const found = this.resolve(chatId, 'human', ref);
+    if (!found.ok) return found;
+    const task = found.task;
+    const text = input.trim().slice(0, GROUP_TASK_TEXT_MAX);
+    if (!text) return { ok: false, error: 'Reply must not be empty.' };
+    const block = task.status === 'blocked' ? (task.blockedReason ?? 'failed') : undefined;
+    if (block === 'failed' || stalledTaskRun(task))
+      return { ok: false, error: `Task #${task.seq} failed to run; retry, reassign or cancel it.` };
+    const current =
+      task.status === 'doing' && task.delegationId
+        ? this.deps.delegations?.().find((record) => record.id === task.delegationId)
+        : undefined;
+    const running = current && isActiveDelegation(current) ? current : undefined;
+    const line = `${this.name('human')} ${block || running ? '回复了' : '评论了'} ${label(task)}：${short(text)}`;
+    if (block === 'need' && task.delegationId) {
+      // 新执行落盘时 sync 写「用户 回复了 …，X 接着做」一行；没成就什么都不写
+      this.humanReply = { taskId: task.id, text };
+      let sent: { ok: true } | { ok: false; error: string };
+      try {
+        sent = this.deps.reply?.({ chatId, delegationId: task.delegationId, text }) ?? {
+          ok: false,
+          error: 'Reply is unavailable.',
+        };
+      } finally {
+        this.humanReply = undefined;
+      }
+      if (!sent.ok) return sent;
+    } else if (running) {
+      const sent = (await this.deps.interject?.({ delegationId: running.id, text })) ?? {
+        ok: false as const,
+        error: 'Reply is unavailable.',
+      };
+      if (!sent.ok) return sent;
+      this.changed(chatId, line);
+    } else this.changed(chatId, line);
+    return { ok: true, task: this.deps.store.find(this.board(chatId), task.id) ?? task };
   }
 
   remove(chatId: string, ref: string): { ok: true } | { ok: false; error: string } {
@@ -554,10 +655,17 @@ export class GroupTaskService {
   }
 
   /**
-   * 委派带 taskId 前的校验：返回规范 taskId。目标是原执行人且任务执行失败 / 待验收时续做（trigger）；
-   * 失败的任务可由创建人或委派人改派他人。会话只按本群看板里的任务真实 id + 成员推导。
+   * 委派带 taskId 前的校验：返回规范 taskId。目标是原执行人且任务卡住 / 待验收时续做（trigger）；
+   * 卡住的任务可由创建人或委派人改派他人。缺信息连续卡住满次数后只有人（human）能答复。
+   * 会话只按本群看板里的任务真实 id + 成员推导。
    */
-  gate(chatId: string | null, ref: string, parentBotId: string, targetBotId?: string): TaskGate {
+  gate(
+    chatId: string | null,
+    ref: string,
+    parentBotId: string,
+    targetBotId?: string,
+    human = false
+  ): TaskGate {
     if (!chatId || !this.group(chatId))
       return { ok: false, error: 'Tasks are only available in group chats.' };
     const task = this.deps.store.find(this.board(chatId), ref);
@@ -567,7 +675,7 @@ export class GroupTaskService {
         error: `Task ${ref.startsWith('#') ? ref : `#${ref}`} not found in this group.`,
       };
     const session = targetBotId ? this.sessionOf(task, targetBotId) : undefined;
-    const pass = (trigger?: 'retry' | 'append', active?: string): TaskGate => ({
+    const pass = (trigger?: 'retry' | 'append' | 'reply', active?: string): TaskGate => ({
       ok: true,
       taskId: task.id,
       seq: task.seq,
@@ -584,6 +692,15 @@ export class GroupTaskService {
       return pass();
     const owner = parentBotId === task.createdBy || parentBotId === this.delegator(task);
     if (owner && targetBotId) {
+      if (task.status === 'blocked' && task.blockedReason === 'need') {
+        if (targetBotId !== task.assigneeBotId) return pass();
+        if (!human && (task.blockedStreak?.[targetBotId] ?? 0) >= GROUP_TASK_BLOCKED_STREAK_MAX)
+          return {
+            ok: false,
+            error: `Task #${task.seq} has been blocked ${GROUP_TASK_BLOCKED_STREAK_MAX} times in a row on ${this.name(targetBotId)}; only a human can answer it now. Ask the human in the group.`,
+          };
+        return pass('reply');
+      }
       if (stalledTaskRun(task))
         return pass(targetBotId === task.assigneeBotId ? 'retry' : undefined);
       if (task.status === 'review' && targetBotId === task.assigneeBotId) return pass('append');
@@ -643,13 +760,19 @@ export class GroupTaskService {
         ? `${parent} 让 ${target} 重试 ${label(task)}`
         : record.trigger === 'append'
           ? `${parent} 给 ${label(task)} 追加了要求，${target} 接着做`
-          : record.trigger === 'rework'
-            ? undefined
-            : `${parent} 把 ${label(task)} 委派给 ${target}`
+          : record.trigger === 'reply'
+            ? this.humanReply?.taskId === task.id
+              ? `${this.name('human')} 回复了 ${label(task)}：${short(this.humanReply.text)}，${target} 接着做`
+              : `${target} 接着做 ${label(task)}`
+            : record.trigger === 'rework'
+              ? undefined
+              : `${parent} 把 ${label(task)} 委派给 ${target}`
       : next.status === 'todo'
         ? `${label(task)} 的委派未完成，已退回待办`
-        : next.status === 'doing'
-          ? `${label(task)} 执行失败：${FAILURE_TEXT[record.failure ?? 'error']}，仍由 ${target} 负责，可重试或改派`
+        : next.status === 'blocked'
+          ? next.blockedReason === 'need'
+            ? `${label(task)} 卡住了，${target} 缺：${short(next.blockedNeed ?? '')}`
+            : `${label(task)} 执行失败：${FAILURE_TEXT[record.failure ?? 'error']}，仍由 ${target} 负责，可重试或改派`
           : next.status === 'review'
             ? `${target} 交付了 ${label(task)}，待${this.name(task.createdBy)}验收${summary}`
             : `${target} 完成了 ${label(task)}${summary}`;
@@ -691,13 +814,14 @@ export class GroupTaskService {
   releaseMember(chatId: string, botId: string): void {
     if (!this.deps.chats.get(chatId)) return;
     for (const task of this.deps.store.list(this.board(chatId))) {
-      if (task.status !== 'doing' || task.assigneeBotId !== botId) continue;
+      if ((task.status !== 'doing' && task.status !== 'blocked') || task.assigneeBotId !== botId)
+        continue;
       const {
         assigneeBotId: _assignee,
         delegationId: _delegation,
         claimedAt: _claimed,
         ...rest
-      } = task;
+      } = unblocked(task);
       this.linkedAfter(
         task,
         this.write(
@@ -793,17 +917,19 @@ export class GroupTaskService {
   }
 
   private brief(task: GroupTask) {
-    const stalled = stalledTaskRun(task);
+    const block = taskBlock(task);
     return {
       id: `#${task.seq}`,
       title: task.title,
       status: task.status,
+      ...(block ? { blockedReason: block.reason } : {}),
+      ...(block?.reason === 'need' ? { need: block.need } : {}),
       ...(task.detail ? { detail: task.detail } : {}),
       ...(task.assigneeBotId ? { assignee: this.name(task.assigneeBotId) } : {}),
       createdBy: this.name(task.createdBy),
       ...(task.result ? { result: task.result } : {}),
       ...(task.returnReason ? { returnReason: task.returnReason } : {}),
-      ...(stalled ? { failure: stalled.failure ?? 'error' } : {}),
+      ...(block?.reason === 'failed' ? { failure: block.failure } : {}),
       ...(task.check ? { check: task.check.text } : {}),
       ...(task.check?.passed !== undefined ? { checkPassed: task.check.passed } : {}),
     };
@@ -901,6 +1027,8 @@ function busy(task: GroupTask, service: GroupTaskService): string {
   if (task.status === 'canceled') return `Task #${task.seq} was canceled.`;
   if (task.status === 'review')
     return `Task #${task.seq} is awaiting review by ${service.name(task.createdBy)}.`;
+  if (task.status === 'blocked')
+    return `Task #${task.seq} is blocked on ${service.name(task.assigneeBotId ?? '')}; only its creator, its delegator or a human can unblock, reassign or cancel it.`;
   if (task.delegationId)
     return `Task #${task.seq} is already delegated to ${service.name(task.assigneeBotId ?? '')}.`;
   return `Task #${task.seq} is already claimed by ${service.name(task.assigneeBotId ?? '')}.`;

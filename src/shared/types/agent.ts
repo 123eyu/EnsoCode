@@ -1101,6 +1101,8 @@ export type AgentCommand =
       botGroupTasks?: boolean;
       /** Bot 私聊 / 群聊成员会话（非委派）：挂 routine_propose / send_image 工具 */
       botRoutines?: boolean;
+      /** Bot 挂看板任务的委派会话：挂 report_blocked 工具 */
+      botDelegationTask?: boolean;
       /** Bot 写成员：同工作区按文件占用、全局命令短独占；祖先会话（委派链）互不阻塞 */
       botWriteLock?: { label: string; ancestors: string[] };
       /** 受保护动作底线（Bot 会话恒开；Code 会话由设置项决定） */
@@ -1742,7 +1744,8 @@ export type AgentWorkerEvent =
         | 'group_tasks'
         | 'group_history'
         | 'routine_propose'
-        | 'send_image';
+        | 'send_image'
+        | 'report_blocked';
       params: unknown;
     }
   | {
@@ -2942,6 +2945,7 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
           'botMode',
           'botGroupTasks',
           'botRoutines',
+          'botDelegationTask',
           'botWriteLock',
           'protectedActions',
           'planMode',
@@ -2992,6 +2996,7 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
         (value.botMode !== undefined && typeof value.botMode !== 'boolean') ||
         (value.botGroupTasks !== undefined && typeof value.botGroupTasks !== 'boolean') ||
         (value.botRoutines !== undefined && typeof value.botRoutines !== 'boolean') ||
+        (value.botDelegationTask !== undefined && typeof value.botDelegationTask !== 'boolean') ||
         (value.botWriteLock !== undefined &&
           (!isRecord(value.botWriteLock) ||
             !isNonEmptyString(value.botWriteLock.label) ||
@@ -3636,7 +3641,8 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
           value.op === 'group_tasks' ||
           value.op === 'group_history' ||
           value.op === 'routine_propose' ||
-          value.op === 'send_image')
+          value.op === 'send_image' ||
+          value.op === 'report_blocked')
         ? (value as unknown as AgentWorkerEvent)
         : null;
     case 'computer-invoke':

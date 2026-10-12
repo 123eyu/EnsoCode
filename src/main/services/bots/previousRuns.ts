@@ -24,6 +24,7 @@ export function previousRunsText(
     return [
       `<run n="${index + 1}" member="${escapeXml(options.name(record.targetBotId))}" trigger="${record.trigger ?? 'delegate'}" state="${record.state}"${failure}>`,
       `<request>${cut(record.task)}</request>`,
+      ...(record.blocked ? [`<blocked-need>${cut(record.blocked.need)}</blocked-need>`] : []),
       ...(outcome ? [`<result>${cut(outcome)}</result>`] : []),
       '</run>',
     ].join('\n');

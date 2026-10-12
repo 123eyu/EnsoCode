@@ -27,13 +27,16 @@ export function DelegationBadge({ state, interrupted }: { state: string; interru
         ? 'bg-success/15 text-success'
         : state === 'failed'
           ? 'bg-destructive/15 text-destructive'
-          : 'bg-muted text-muted-foreground';
+          : state === 'blocked'
+            ? 'bg-warning/15 text-warning'
+            : 'bg-muted text-muted-foreground';
   const label: Record<string, string> = {
     queued: t('Queued'),
     running: t('In progress'),
     completed: t('Completed'),
     failed: interrupted ? t('Interrupted') : t('Failed'),
     canceled: t('Canceled'),
+    blocked: t('Stuck run'),
   };
   return <span className={cn('rounded px-1.5 text-[11px]', tone)}>{label[state] ?? state}</span>;
 }

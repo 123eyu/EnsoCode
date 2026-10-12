@@ -281,7 +281,8 @@ describe('验收条件 check', () => {
       9
     )!;
     expect(back).toMatchObject({
-      status: 'doing',
+      status: 'blocked',
+      blockedReason: 'failed',
       assigneeBotId: delegation().targetBotId,
       delegationId: DELEGATION,
       result: '验收未通过：未在工具输出中看到「XYZ_PASS」',
@@ -450,7 +451,7 @@ describe('委派联动状态机 taskAfterDelegation', () => {
     expect(taskAfterDelegation(todo, delegation({ taskId: 'other' }), 5)).toBeUndefined();
   });
 
-  it('委派完成：执行人不是创建人 → review 保留负责人与委派；失败保留负责人；取消 → 退回 todo 清负责人', () => {
+  it('委派完成：执行人不是创建人 → review 保留负责人与委派；失败 → 卡住（执行失败）保留负责人；取消 → 退回 todo 清负责人', () => {
     const linked = taskAfterDelegation(todo, delegation(), 5)!;
     expect(
       taskAfterDelegation(linked, delegation({ state: 'completed', result: 'all good' }), 9)
@@ -465,11 +466,15 @@ describe('委派联动状态机 taskAfterDelegation', () => {
       expect(
         taskAfterDelegation(linked, delegation({ state: 'failed', failure }), 9)
       ).toMatchObject({
-        status: 'doing',
+        status: 'blocked',
+        blockedReason: 'failed',
         assigneeBotId: delegation().targetBotId,
         delegationId: DELEGATION,
         updatedAt: 9,
       });
+    expect(
+      taskAfterDelegation(linked, delegation({ state: 'failed', failure: 'timeout' }), 9)
+    ).not.toHaveProperty('blockedStreak');
     const back = taskAfterDelegation(linked, delegation({ state: 'canceled' }), 9)!;
     expect(back).toMatchObject({ status: 'todo', updatedAt: 9 });
     expect(back).not.toHaveProperty('assigneeBotId');
@@ -492,6 +497,72 @@ describe('委派联动状态机 taskAfterDelegation', () => {
     expect(
       taskAfterDelegation(linked, delegation({ state: 'completed', result: 'ok' }), 9)
     ).toMatchObject({ status: 'done', result: 'ok' });
+  });
+
+  it('卡住（缺信息）：任务 → blocked/need，记缺什么，该成员连续次数 +1；交付后清零；失败不计次', () => {
+    const target = delegation().targetBotId;
+    const linked = taskAfterDelegation(todo, delegation(), 5)!;
+    const blocked = taskAfterDelegation(
+      linked,
+      delegation({
+        state: 'blocked',
+        blocked: { need: '数据库密码', waitFor: 'parent', at: 8 },
+      }),
+      9
+    )!;
+    expect(blocked).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'need',
+      blockedNeed: '数据库密码',
+      blockedStreak: { [target]: 1 },
+      assigneeBotId: target,
+      delegationId: DELEGATION,
+    });
+    // 回复：同成员新执行接手，任务回到 doing，清掉卡住原因、保留次数
+    const replied = taskAfterDelegation(
+      blocked,
+      delegation({ id: 'reply', trigger: 'reply' }),
+      10
+    )!;
+    expect(replied).toMatchObject({
+      status: 'doing',
+      delegationId: 'reply',
+      blockedStreak: { [target]: 1 },
+    });
+    expect(replied).not.toHaveProperty('blockedReason');
+    expect(replied).not.toHaveProperty('blockedNeed');
+    const again = taskAfterDelegation(
+      replied,
+      delegation({
+        id: 'reply',
+        state: 'blocked',
+        blocked: { need: '还缺账号', waitFor: 'human', at: 11 },
+      }),
+      12
+    )!;
+    expect(again).toMatchObject({ blockedNeed: '还缺账号', blockedStreak: { [target]: 2 } });
+    // 执行失败不计次
+    const retry = taskAfterDelegation(again, delegation({ id: 'r2', trigger: 'reply' }), 13)!;
+    const failed = taskAfterDelegation(
+      retry,
+      delegation({ id: 'r2', state: 'failed', failure: 'timeout' }),
+      14
+    )!;
+    expect(failed).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'failed',
+      blockedStreak: { [target]: 2 },
+    });
+    expect(failed).not.toHaveProperty('blockedNeed');
+    // 交付清零
+    const r3 = taskAfterDelegation(failed, delegation({ id: 'r3', trigger: 'retry' }), 15)!;
+    const delivered = taskAfterDelegation(
+      r3,
+      delegation({ id: 'r3', state: 'completed', result: 'ok' }),
+      16
+    )!;
+    expect(delivered.status).toBe('review');
+    expect(delivered).not.toHaveProperty('blockedStreak');
   });
 });
 
@@ -857,7 +928,7 @@ describe('执行记录 runs / sessions', () => {
 describe('会话延续：续跑闸门、失败保留负责人、退回返工', () => {
   const runId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
   /** alice 建卡并委派给 bob，执行到 state；子会话 child-bob */
-  const handed = (state: 'failed' | 'completed', over: Partial<Delegation> = {}) => {
+  const handed = (state: 'failed' | 'completed' | 'blocked', over: Partial<Delegation> = {}) => {
     const task = added('Login page', alice);
     const record = delegation({
       chatId,
@@ -871,7 +942,11 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
     const done = {
       ...record,
       state,
-      ...(state === 'failed' ? { failure: 'timeout' as const } : { result: 'shipped' }),
+      ...(state === 'failed'
+        ? { failure: 'timeout' as const }
+        : state === 'blocked'
+          ? { blocked: { need: '数据库密码', waitFor: 'parent' as const, at: 2 } }
+          : { result: 'shipped' }),
       ...over,
     };
     legacy = [done];
@@ -879,10 +954,11 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
     return { task, record: done };
   };
 
-  it('执行失败：任务仍由执行人负责、保留会话，时间线写失败原因；list 带出失败原因', () => {
+  it('执行失败：任务进卡住（执行失败），仍由执行人负责、保留会话，时间线写失败原因；list 带出失败原因', () => {
     handed('failed');
     expect(store().find(chatId, '#1')).toMatchObject({
-      status: 'doing',
+      status: 'blocked',
+      blockedReason: 'failed',
       assigneeBotId: bob,
       delegationId: DELEGATION,
       sessions: { [bob]: 'child-bob' },
@@ -890,7 +966,15 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
     });
     expect(systemTexts().at(-1)).toBe('#1 Login page 执行失败：超时，仍由 Bob 负责，可重试或改派');
     expect(service.tool(chatId, alice, { action: 'list' })).toMatchObject({
-      tasks: [{ id: '#1', status: 'doing', assignee: 'Bob', failure: 'timeout' }],
+      tasks: [
+        {
+          id: '#1',
+          status: 'blocked',
+          blockedReason: 'failed',
+          assignee: 'Bob',
+          failure: 'timeout',
+        },
+      ],
     });
   });
 
@@ -909,7 +993,8 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
     chats.update(chatId, (draft) => ({ ...draft, members: [...draft.members, c.bot.id] }));
     expect(service.gate(chatId, '#1', c.bot.id, bob)).toEqual({
       ok: false,
-      error: 'Task #1 is already delegated to Bob.',
+      error:
+        'Task #1 is blocked on Bob; only its creator, its delegator or a human can unblock, reassign or cancel it.',
     });
     // 新执行挂上任务：失败的执行不再挡
     service.sync(
@@ -1061,5 +1146,125 @@ describe('会话延续：续跑闸门、失败保留负责人、退回返工', (
     expect(store().find(chatId, '#1')).not.toHaveProperty('returnReason');
     expect(service.reject(chatId, bob, '#1', 'redo', true)).toMatchObject({ ok: false });
     expect(rework).toHaveBeenCalledTimes(1);
+  });
+
+  it('卡住（缺信息）：时间线写缺什么；委派人给原执行人 → reply 接同一会话；旁人、执行人自己不能解除', () => {
+    const { task } = handed('blocked');
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'need',
+      blockedNeed: '数据库密码',
+      blockedStreak: { [bob]: 1 },
+    });
+    expect(systemTexts().at(-1)).toBe('#1 Login page 卡住了，Bob 缺：数据库密码');
+    expect(service.tool(chatId, alice, { action: 'list' })).toMatchObject({
+      tasks: [{ id: '#1', status: 'blocked', blockedReason: 'need', need: '数据库密码' }],
+    });
+    expect(service.gate(chatId, '#1', alice, bob)).toEqual({
+      ok: true,
+      taskId: task.id,
+      seq: 1,
+      trigger: 'reply',
+      session: 'child-bob',
+    });
+    // 执行人自己 / 无关成员
+    expect(service.gate(chatId, '#1', bob, bob)).toMatchObject({ ok: false });
+    const c = bots.create({ name: 'Carol' }, []);
+    if (!c.ok) throw new Error('bot');
+    chats.update(chatId, (draft) => ({ ...draft, members: [...draft.members, c.bot.id] }));
+    expect(service.gate(chatId, '#1', c.bot.id, bob)).toMatchObject({ ok: false });
+    // 成员不能认领 / 完成卡住的任务；执行人自己也不能取消
+    expect(service.claim(chatId, c.bot.id, '#1')).toMatchObject({ ok: false });
+    expect(service.complete(chatId, bob, '#1', 'x')).toMatchObject({ ok: false });
+    expect(service.cancel(chatId, bob, '#1')).toEqual({
+      ok: false,
+      error: 'Only the creator, the delegator or a human can cancel blocked task #1.',
+    });
+    // 人取消：卡住原因与连续次数一并清掉
+    const canceled = service.cancel(chatId, 'human', '#1');
+    expect(canceled).toMatchObject({ ok: true, task: { status: 'canceled' } });
+    expect(store().find(chatId, '#1')).not.toHaveProperty('blockedReason');
+    expect(store().find(chatId, '#1')).not.toHaveProperty('blockedStreak');
+  });
+
+  it('连续 3 次缺信息卡住：不再接受委派人代答，只有人能解除；执行失败的卡住不受次数影响', () => {
+    handed('blocked', { blocked: { need: 'x', waitFor: 'parent', at: 2 } });
+    const current = store().find(chatId, '#1')!;
+    store().save(chatId, { ...current, blockedStreak: { [bob]: 3 } });
+    expect(service.gate(chatId, '#1', alice, bob)).toEqual({
+      ok: false,
+      error:
+        'Task #1 has been blocked 3 times in a row on Bob; only a human can answer it now. Ask the human in the group.',
+    });
+    expect(service.gate(chatId, '#1', alice, bob, true)).toMatchObject({
+      ok: true,
+      trigger: 'reply',
+    });
+    store().save(chatId, {
+      ...current,
+      blockedReason: 'failed',
+      blockedNeed: undefined,
+      blockedStreak: { [bob]: 3 },
+    });
+    expect(service.gate(chatId, '#1', alice, bob)).toMatchObject({ ok: true, trigger: 'retry' });
+  });
+
+  it('任务卡回复：缺信息 → 交给委派服务解除；执行失败拒绝；执行中插入当前执行；其他状态只记评论', async () => {
+    const reply = vi.fn((input: { chatId: string; delegationId: string; text: string }) => {
+      // 委派服务开新执行（trigger reply），落盘时同步任务
+      service.sync(
+        delegation({
+          id: runId(5),
+          chatId,
+          parentBotId: alice,
+          targetBotId: bob,
+          taskId: store().find(chatId, '#1')!.id,
+          childConversationId: 'child-bob',
+          trigger: 'reply',
+          task: input.text,
+        })
+      );
+      return { ok: true as const };
+    });
+    const interject = vi.fn(async (_input: { delegationId: string; text: string }) => ({
+      ok: true as const,
+    }));
+    Object.assign((service as unknown as { deps: object }).deps, { reply, interject });
+    handed('blocked');
+    expect(await service.reply(chatId, '#1', '  ')).toMatchObject({ ok: false });
+    expect(await service.reply(chatId, '#1', '密码是 hunter2')).toMatchObject({ ok: true });
+    expect(reply).toHaveBeenCalledWith({
+      chatId,
+      delegationId: DELEGATION,
+      text: '密码是 hunter2',
+    });
+    expect(systemTexts().at(-1)).toBe('用户 回复了 #1 Login page：密码是 hunter2，Bob 接着做');
+    expect(store().find(chatId, '#1')).toMatchObject({ status: 'doing', delegationId: runId(5) });
+
+    handed('failed');
+    expect(await service.reply(chatId, '#2', '再试试')).toEqual({
+      ok: false,
+      error: 'Task #2 failed to run; retry, reassign or cancel it.',
+    });
+
+    const doing = added('Docs', alice);
+    const running = delegation({
+      id: runId(7),
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: doing.id,
+      state: 'running',
+    });
+    legacy = [running];
+    service.sync(running);
+    expect(await service.reply(chatId, '#3', '顺便改下标题')).toMatchObject({ ok: true });
+    expect(interject).toHaveBeenCalledWith({ delegationId: runId(7), text: '顺便改下标题' });
+
+    added('Idle');
+    expect(await service.reply(chatId, '#4', '先放着')).toMatchObject({ ok: true });
+    expect(systemTexts().at(-1)).toBe('用户 评论了 #4 Idle：先放着');
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(interject).toHaveBeenCalledTimes(1);
   });
 });

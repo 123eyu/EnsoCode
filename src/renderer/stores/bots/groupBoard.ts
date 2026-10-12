@@ -15,10 +15,12 @@ export function taskColumns(tasks: readonly GroupTask[]): Record<GroupTaskStatus
     review: [],
     done: [],
     canceled: [],
+    blocked: [],
   };
   for (const task of tasks) columns[task.status].push(task);
   columns.todo.sort((a, b) => a.seq - b.seq);
   columns.doing.sort((a, b) => a.seq - b.seq);
+  columns.blocked.sort((a, b) => a.seq - b.seq);
   columns.review.sort((a, b) => a.seq - b.seq);
   columns.done.sort((a, b) => b.updatedAt - a.updatedAt);
   columns.canceled.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -53,7 +55,7 @@ export function chatDelegationGroups(
       .filter((item) => item.state === 'completed')
       .sort((a, b) => finished(b) - finished(a)),
     failed: mine
-      .filter((item) => item.state === 'failed' || item.state === 'canceled')
+      .filter((item) => ['failed', 'canceled', 'blocked'].includes(item.state))
       .sort((a, b) => finished(b) - finished(a)),
   };
 }

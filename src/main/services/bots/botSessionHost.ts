@@ -33,6 +33,8 @@ import { messageTokens } from './turnTokens';
 
 /** 运行中的轮次超过该时长没有任何输出（流式、工具进度、子代理）即视为静默 */
 export const BOT_SILENCE_MS = 5 * 60_000;
+/** 委派执行登记卡住后迟迟不收尾时的软停止：只中止当前回合，不算用户停止 */
+export const BOT_BLOCKED_STOP = 'blocked-stop';
 /** 进行中的回合为成员日预算预留的估算 token：本回合已用部分抵扣，回合结束即释放 */
 export const BOT_TURN_RESERVE_TOKENS = 32_000;
 
@@ -72,6 +74,8 @@ export interface BotSpawnSpec {
   routines?: boolean;
   /** 写成员：worker 内同工作区按文件占用、全局命令短独占；ancestors 为委派链祖先会话 */
   writeLock?: { label: string; ancestors: string[] };
+  /** 挂看板任务的委派会话：挂 report_blocked */
+  delegationTask?: boolean;
 }
 
 export interface BotRuntimePort {
@@ -137,6 +141,8 @@ export interface BotSessionHostDeps {
 export interface BotDelegationOrigin {
   parentConversationId: string;
   chatId: string | null;
+  /** 执行挂着看板任务（深度 1）：会话挂 report_blocked */
+  task?: true;
 }
 
 export interface BotDeliverOptions {
@@ -400,7 +406,9 @@ export class BotSessionHost {
         self: bot,
         kind: 'direct',
         roster: this.deps.bots.list(),
+        ...(origin?.task ? { delegationTask: true } : {}),
       }),
+      ...(origin?.task ? { delegationTask: true } : {}),
     });
     return true;
   }
@@ -637,6 +645,41 @@ export class BotSessionHost {
     );
     this.queueReasons = next;
     return changed.map(([chatId]) => chatId);
+  }
+
+  /**
+   * 只中止会话当前回合（软停止）：排队投递保留，已下发但 worker 还没收下的插话改回排队，
+   * 都作为后续回合；不按用户停止结算（不级联取消该回合发起的委派）。没有进行中的回合返回 false。
+   */
+  async interruptTurn(id: string, reason: string): Promise<boolean> {
+    if (this.disposed || !this.turnActive(id)) return false;
+    this.markStopping(id);
+    for (const [delivery] of [...this.redirects])
+      if (delivery.conversationId === id) this.settleRedirect(delivery, false);
+    // markStopping 推进了 epoch：保留下来的投递跟上新 epoch；回合结算前就回到排队，结算方能看到它们
+    const epoch = this.epochs.get(id) ?? 0;
+    for (const item of [...this.queue, ...this.preparing])
+      if (item.conversationId === id) item.epoch = epoch;
+    for (const item of [...this.pendingSteers.keys()]) {
+      if (item.conversationId !== id) continue;
+      this.pendingSteers.delete(item);
+      if (item.deliveryId) this.deliveries.get(id)?.delete(item.deliveryId);
+      item.queueIfBusy = true;
+      item.epoch = epoch;
+      this.enqueue(item);
+    }
+    await this.withLock(id, async () => {
+      this.deps.runtime.abort?.(id);
+      this.cancelActive(id, reason);
+      await this.deps.runtime.release(id);
+      this.live.delete(id);
+      this.running.delete(id);
+      this.slots.delete(id);
+      this.stopping.delete(id);
+      this.lastAssistant.delete(id);
+    });
+    this.pump();
+    return true;
   }
 
   async stopTurn(chatId: string, botId: string): Promise<void> {
@@ -2118,7 +2161,9 @@ export class BotSessionHost {
         reason,
         '',
         undefined,
-        reason !== BOT_BUDGET_ERROR && reason !== BOT_TURN_LIMIT_ERROR,
+        reason !== BOT_BUDGET_ERROR &&
+          reason !== BOT_TURN_LIMIT_ERROR &&
+          reason !== BOT_BLOCKED_STOP,
         estimated
       );
     this.running.delete(id);

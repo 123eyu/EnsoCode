@@ -6,6 +6,8 @@ import {
   type BotPermissions,
   botNameKey,
   DELEGATION_APPENDS_MAX,
+  DELEGATION_BLOCKED_NEED_MAX,
+  DELEGATION_BLOCKED_STOP_MINUTES,
   DELEGATION_TIMEOUT_MINUTES,
   type Delegation,
   type DelegationTrigger,
@@ -13,11 +15,12 @@ import {
 } from '../../../shared/types/bot';
 import type { BotEvent, BotSendResult } from '../../../shared/types/botIpc';
 import { BOT_BUDGET_ERROR } from '../../../shared/usage/botUsage';
-import type {
-  BotAuthorityPort,
-  BotDeliverResult,
-  BotSessionHost,
-  BotTurnFinished,
+import {
+  BOT_BLOCKED_STOP,
+  type BotAuthorityPort,
+  type BotDeliverResult,
+  type BotSessionHost,
+  type BotTurnFinished,
 } from './botSessionHost';
 import type { BotStore } from './botStore';
 import type { BotChatStore } from './chatStore';
@@ -47,7 +50,13 @@ interface Deps {
   minuteMs?: number;
   /** 群任务看板联动：taskId 校验、自动建卡与每次落盘后的状态同步 */
   tasks?: {
-    gate(chatId: string | null, ref: string, parentBotId: string, targetBotId?: string): TaskGate;
+    gate(
+      chatId: string | null,
+      ref: string,
+      parentBotId: string,
+      targetBotId?: string,
+      human?: boolean
+    ): TaskGate;
     open(
       chatId: string,
       botId: string,
@@ -142,6 +151,10 @@ const samePermissions = (a: BotPermissions | undefined, b: BotPermissions) =>
 
 export class DelegationService {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 登记卡住后等本轮收尾的软停止计时 */
+  private readonly blockTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 卡住时由排队投递转成的下一次执行：自己没有投递，排队的投递都没跑起来就记失败 */
+  private readonly rollovers = new Set<string>();
   private readonly delivering = new Set<string>();
   private readonly unsubscribe: () => void;
   private readonly unsubscribeDiscard: () => void;
@@ -202,8 +215,10 @@ export class DelegationService {
         this.save({
           ...record,
           ...closeAppends(record),
-          state: 'failed',
-          failure: 'interrupted',
+          // 登记过卡住的按卡住收尾，其余记中断
+          ...(record.blocked
+            ? { state: 'blocked' as const }
+            : { state: 'failed' as const, failure: 'interrupted' as const }),
           finishedAt: Date.now(),
         });
     }
@@ -241,6 +256,8 @@ export class DelegationService {
       trigger?: DelegationTrigger;
       /** 不续用任务会话（手动「从头重试」） */
       fresh?: boolean;
+      /** 人在任务卡上答复：不受连续卡住次数限制 */
+      human?: boolean;
     } = {}
   ): DelegateResult {
     if (this.disposed) return { ok: false, error: 'disabled' };
@@ -290,7 +307,7 @@ export class DelegationService {
     const gate =
       input.taskId === undefined
         ? undefined
-        : (this.deps.tasks?.gate(chatId, input.taskId, parent.id, target.id) ?? {
+        : (this.deps.tasks?.gate(chatId, input.taskId, parent.id, target.id, options.human) ?? {
             ok: false as const,
             error: 'Tasks are only available in group chats.',
           });
@@ -363,8 +380,13 @@ export class DelegationService {
       mcpServerIds: effective.mcpServerIds,
     };
     const previous = continued ? this.executionOf(continued) : undefined;
+    // 活实例可能是回送子委派结果时按只读重新拉起的：工具或审批档对不上也要重启
+    const live = continued ? this.deps.host.effectiveBot(continued) : undefined;
     const respawn =
-      previous !== undefined && !samePermissions(previous.effectivePermissions, permissions);
+      previous !== undefined &&
+      (!samePermissions(previous.effectivePermissions, permissions) ||
+        (live !== undefined &&
+          (live.tools !== permissions.tools || live.approvalMode !== permissions.approvalMode)));
     const trigger: DelegationTrigger =
       options.trigger ?? (options.retryOf ? 'retry' : (task?.trigger ?? 'delegate'));
     // 群主再派给失败的原执行人：就是对那次失败执行的重试
@@ -373,7 +395,12 @@ export class DelegationService {
       (trigger === 'retry' && previous?.state === 'failed' && previous.taskId === taskId
         ? previous.id
         : undefined);
-    const origin = { parentConversationId, chatId };
+    // 挂看板任务的执行（深度 1）才有 report_blocked
+    const origin = {
+      parentConversationId,
+      chatId,
+      ...(taskId && depth === 1 ? { task: true as const } : {}),
+    };
     if (!child || !this.deps.host.registerDelegation(child.conversationId, effective, origin)) {
       if (opened && chatId && taskId) this.deps.tasks?.discard(chatId, taskId);
       return { ok: false, error: 'Delegation workspace unavailable.' };
@@ -662,7 +689,8 @@ export class DelegationService {
       };
       this.save(record);
     }
-    if (this.pending(record)) this.outcomes.set(record.id, outcome);
+    // 登记了卡住：不等排队的追加 / 插话，它们转成下一次执行
+    if (this.pending(record) && !record.blocked) this.outcomes.set(record.id, outcome);
     else this.settle(record, outcome);
   }
 
@@ -676,12 +704,18 @@ export class DelegationService {
   private settleIfIdle(recordId: string): void {
     const record = this.deps.store.get(recordId);
     const outcome = this.outcomes.get(recordId);
-    if (record && active(record) && outcome && !this.pending(record)) this.settle(record, outcome);
+    if (!record || !active(record) || this.pending(record)) return;
+    if (outcome) this.settle(record, outcome);
+    else if (record.state === 'queued' && this.rollovers.has(record.id))
+      this.finish(record, 'failed', 'error', undefined, 'Queued messages were not delivered.');
   }
 
   private settle(record: Delegation, outcome: TurnOutcome): void {
+    const stored = this.outcomes.get(record.id);
     this.outcomes.delete(record.id);
-    if (outcome.ok && record.check) {
+    // 软停止中止的回合没有正文：用原回合暂存的结果
+    if (record.blocked) this.block(record, outcome.text ? outcome : (stored ?? outcome));
+    else if (outcome.ok && record.check) {
       this.settling.add(record.id);
       void this.verify(record, record.check, outcome.text);
     } else
@@ -966,6 +1000,153 @@ export class DelegationService {
     return session.ok ? session.conversationId : undefined;
   }
 
+  /** 子会话正在跑的那次执行（排在后面、还没投递的不算） */
+  private runningIn(childConversationId: string): Delegation | undefined {
+    return this.deps.store
+      .list()
+      .find(
+        (record) =>
+          record.childConversationId === childConversationId &&
+          record.state === 'running' &&
+          !this.held.has(record.id)
+      );
+  }
+
+  /** report_blocked：只登记，本轮由模型自然结束后记为 blocked；5 分钟还没收尾就软停止 */
+  reportBlocked(
+    childConversationId: string,
+    input: { need: string; waitFor?: 'human' | 'parent' }
+  ): { ok: true; instruction: string } | { ok: false; error: string } {
+    const record = this.deps.authority.conversation(childConversationId)?.bot?.delegationId
+      ? this.runningIn(childConversationId)
+      : undefined;
+    if (!record?.taskId || record.depth !== 1)
+      return {
+        ok: false,
+        error: 'report_blocked is only available while working on a delegated board task.',
+      };
+    const need = input.need.trim().slice(0, DELEGATION_BLOCKED_NEED_MAX);
+    if (!need) return { ok: false, error: 'Describe what you need in need.' };
+    this.save({
+      ...record,
+      blocked: { need, waitFor: input.waitFor ?? 'parent', at: Date.now() },
+    });
+    clearTimeout(this.blockTimers.get(record.id));
+    const timer = setTimeout(
+      () => this.softStop(record.id),
+      DELEGATION_BLOCKED_STOP_MINUTES * (this.deps.minuteMs ?? 60_000)
+    );
+    timer.unref?.();
+    this.blockTimers.set(record.id, timer);
+    return {
+      ok: true,
+      instruction:
+        'Blocked reported. In one or two sentences say what you have done so far, then end your turn now; do not keep working on this task. You will continue in this session once someone answers.',
+    };
+  }
+
+  /** 登记卡住后迟迟不收尾：只中止当前回合（不取消排队、不级联取消子委派） */
+  private softStop(id: string): void {
+    this.blockTimers.delete(id);
+    const record = this.deps.store.get(id);
+    if (!record || !active(record) || !record.blocked || this.settling.has(id)) return;
+    // 先中止正在跑的回合（回合结束事件里按卡住结算）；没有在跑的回合才直接结算
+    void this.deps.host
+      .interruptTurn(record.childConversationId, BOT_BLOCKED_STOP)
+      .catch(console.warn)
+      .then((stopped) => {
+        const latest = this.deps.store.get(id);
+        if (!stopped && latest && active(latest))
+          this.block(latest, this.outcomes.get(id) ?? { ok: false, text: '' });
+      });
+  }
+
+  /**
+   * 执行记为 blocked（释放名额、停计时、结果照常回传）。子会话里还排着的追加 / 插话
+   * 不撤掉，转成同一会话的下一次执行（来源追加），排在后面的执行改排到它之后。
+   */
+  private block(record: Delegation, outcome: TurnOutcome): void {
+    const open = record.appends?.filter((item) => item.ok === undefined) ?? [];
+    const kept = record.appends?.filter((item) => item.ok !== undefined) ?? [];
+    const { appends: _appends, ...base } = record;
+    const next: Delegation | undefined =
+      open.length || this.deps.host.hasPendingDeliveries(record.childConversationId)
+        ? {
+            id: randomUUID(),
+            parentConversationId: record.parentConversationId,
+            parentBotId: record.parentBotId,
+            targetBotId: record.targetBotId,
+            chatId: record.chatId,
+            task: open.length
+              ? open.map((item) => item.text).join('\n\n')
+              : 'Messages queued while the previous run was ending.',
+            context: '',
+            childConversationId: record.childConversationId,
+            state: 'queued',
+            depth: record.depth,
+            createdAt: Date.now(),
+            ...(record.effectivePermissions
+              ? { effectivePermissions: record.effectivePermissions }
+              : {}),
+            ...(record.taskId ? { taskId: record.taskId } : {}),
+            ...(record.keep ? { keep: true as const } : {}),
+            ...(record.check
+              ? { check: { kind: record.check.kind, text: record.check.text } }
+              : {}),
+            ...(record.timeoutMinutes ? { timeoutMinutes: record.timeoutMinutes } : {}),
+            trigger: 'append',
+            ...(open.length ? { appends: open } : {}),
+          }
+        : undefined;
+    if (next)
+      for (const entry of this.held.values()) if (entry.after === record.id) entry.after = next.id;
+    this.finish(
+      kept.length ? { ...base, appends: kept } : base,
+      'blocked',
+      undefined,
+      outcome.text || undefined
+    );
+    if (next) {
+      this.rollovers.add(next.id);
+      this.save(next);
+    }
+  }
+
+  /** 人在任务卡回复缺信息卡住的任务：同成员同会话新开一次执行，结果回委派人（原会话失效则其当前会话） */
+  reply(input: { chatId: string; delegationId: string; text: string }): DelegateResult {
+    const last = this.deps.store.get(input.delegationId);
+    if (!last?.taskId || last.state !== 'blocked')
+      return { ok: false, error: 'This task is not waiting for an answer.' };
+    const parentConversationId = this.delegatorSession(last);
+    if (!parentConversationId) return { ok: false, error: 'Parent bot session unavailable.' };
+    return this.delegate(
+      parentConversationId,
+      {
+        to: last.targetBotId,
+        taskId: last.taskId,
+        task: `A human answered on the task card:\n${input.text}`,
+        ...(last.timeoutMinutes ? { deadlineMinutes: last.timeoutMinutes } : {}),
+      },
+      { standalone: true, trigger: 'reply', human: true }
+    );
+  }
+
+  /** 人在任务卡回复执行中的任务：作为真人插话投进当前执行的子会话 */
+  async interject(input: {
+    delegationId: string;
+    text: string;
+  }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const record = this.deps.store.get(input.delegationId);
+    if (!record || !active(record) || this.held.has(record.id))
+      return { ok: false, error: 'This run has ended.' };
+    const sent = await this.deps.host.deliverConversation(
+      record.childConversationId,
+      `From a human on the task card:\n${input.text}`,
+      { source: 'human', deliveryId: randomUUID() }
+    );
+    return sent.ok ? { ok: true } : { ok: false, error: sent.error };
+  }
+
   /** 父回合被停止：取消该轮发起且未 keep 的委派；整批都已结束则只落时间线，不再唤醒父会话 */
   private stopBatch(parentConversationId: string, batchId: string): void {
     const batch = () =>
@@ -1044,6 +1225,10 @@ export class DelegationService {
   private expire(id: string): void {
     const current = this.deps.store.get(id);
     if (!current || !active(current) || this.settling.has(id)) return;
+    if (current.blocked) {
+      this.softStop(id);
+      return;
+    }
     const outcome = this.outcomes.get(id);
     if (outcome) this.settle(current, outcome);
     else this.finish(current, 'failed', 'timeout');
@@ -1076,6 +1261,8 @@ export class DelegationService {
       if (parent.bot?.delegationId) {
         const bot = this.deps.bots.get(head.parentBotId);
         const record = this.executionOf(parent.conversationId);
+        // 执行人卡住在等答复：子委派结果先不回送，免得在卡住的会话里起一轮无主回合
+        if (record?.state === 'blocked') continue;
         const saved = record?.effectivePermissions;
         // Interrupted delegation parents must not be restarted with their original task.
         if (
@@ -1127,8 +1314,10 @@ export class DelegationService {
     for (const waiters of this.receiptWaiters.values())
       for (const wake of [...waiters]) wake('deferred');
     this.receiptWaiters.clear();
-    for (const timer of this.timers.values()) clearTimeout(timer);
+    for (const timer of [...this.timers.values(), ...this.blockTimers.values()])
+      clearTimeout(timer);
     this.timers.clear();
+    this.blockTimers.clear();
   }
 
   disable(): void {
@@ -1146,9 +1335,12 @@ export class DelegationService {
   ): void {
     clearTimeout(this.timers.get(record.id));
     this.timers.delete(record.id);
+    clearTimeout(this.blockTimers.get(record.id));
+    this.blockTimers.delete(record.id);
     const held = this.held.has(record.id);
     const orphaned =
       !held &&
+      state !== 'blocked' &&
       (record.appends?.some((item) => item.ok === undefined) ||
         this.deps.host.hasPendingDeliveries(record.childConversationId));
     const finished: Delegation = {
@@ -1163,6 +1355,7 @@ export class DelegationService {
     this.save(finished);
     this.outcomes.delete(record.id);
     this.settling.delete(record.id);
+    this.rollovers.delete(record.id);
     for (const item of record.appends ?? []) {
       if (item.ok === undefined) this.receipt(item.deliveryId, 'failed');
       this.accepted.delete(item.deliveryId);

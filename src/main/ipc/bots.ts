@@ -346,6 +346,7 @@ function createRuntime(botsRoot: string): BotRuntimePort {
             mcpServerIds: spec.bot.mcpServerIds,
             ...(spec.groupTasks ? { groupTasks: true } : {}),
             ...(spec.routines ? { routines: true } : {}),
+            ...(spec.delegationTask ? { delegationTask: true } : {}),
             ...(spec.writeLock ? { writeLock: spec.writeLock } : {}),
           },
         }
@@ -608,6 +609,9 @@ export function getBotServices(): BotServices | null {
     },
     delegations: () => delegationStore.list(),
     rework: (input) => delegationsRef?.rework(input) ?? { ok: false, error: 'disabled' },
+    reply: (input) => delegationsRef?.reply(input) ?? { ok: false, error: 'disabled' },
+    interject: async (input) =>
+      delegationsRef ? delegationsRef.interject(input) : { ok: false, error: 'disabled' },
   });
   host.onDiscard((scope) => {
     if (scope.botId) tasks.releaseBot(scope.botId);
@@ -692,6 +696,16 @@ export function getBotServices(): BotServices | null {
     usage: () => usage.overview(),
     silences: () => host.silences(),
     emit: emitBotEvent,
+    taskBlocked: (record) =>
+      !!record.chatId &&
+      tasks
+        .list(record.chatId)
+        .some(
+          (task) =>
+            task.id === record.taskId &&
+            task.status === 'blocked' &&
+            task.delegationId === record.id
+        ),
   });
   host.onTurnFinished((event) => inbox.turnFinished(event.conversationId));
   setBotWorkerEventObserver((event) => {
@@ -1537,6 +1551,13 @@ export function registerBotHandlers(): void {
     if (typeof reason !== 'string' || !reason.trim() || reason.length > GROUP_TASK_TEXT_MAX)
       return INVALID;
     return services.tasks.reject(target.chatId, 'human', target.id, reason, rework === true);
+  });
+  handle(IPC_CHANNELS.BOT_TASK_REPLY, 'write', (_sender, request, services) => {
+    const target = taskTarget(services, request);
+    const text = target?.input.text;
+    if (!target || typeof text !== 'string' || !text.trim() || text.length > GROUP_TASK_TEXT_MAX)
+      return INVALID;
+    return services.tasks.reply(target.chatId, target.id, text);
   });
   handle(
     IPC_CHANNELS.BOTS_LIST,

@@ -1236,6 +1236,9 @@ const electronAPI = {
           | { accept: false; reason: string; rework?: boolean }
         )
       ): Promise<BotTaskWriteResult> => ipcRenderer.invoke(IPC_CHANNELS.BOT_TASK_REVIEW, request),
+      /** 任务卡回复：缺信息卡住时解除并让原执行人接着做；执行中插入当前执行；其他状态记评论 */
+      reply: (request: { chatId: string; id: string; text: string }): Promise<BotTaskWriteResult> =>
+        ipcRenderer.invoke(IPC_CHANNELS.BOT_TASK_REPLY, request),
     },
     list: (): Promise<BotsListResult> => ipcRenderer.invoke(IPC_CHANNELS.BOTS_LIST),
     get: (botId: string): Promise<BotGetResult> =>

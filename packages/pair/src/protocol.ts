@@ -331,7 +331,14 @@ export interface PairBotChatSummary {
   status: PairBotRunState;
 }
 
-export type PairDelegationState = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+/** 旧手机遇到不认识的值（如 blocked）只是文案为空，不报错 */
+export type PairDelegationState =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'blocked';
 
 interface PairGroupEntryBase {
   seq: number;
@@ -381,7 +388,8 @@ export interface PairBotInboxItem {
     | 'budget'
     | 'routine-draft'
     | 'routine-blocked'
-    | 'silence';
+    | 'silence'
+    | 'task-blocked';
   chatId: string | null;
   botId?: string;
   /** 委派会话：botId 替 ownerBotId 执行 */

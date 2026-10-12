@@ -40,12 +40,17 @@ const missedAppends = (record: Delegation) => {
     : '';
 };
 
+const blockedBody = (record: Delegation) =>
+  `Blocked. Needs: ${record.blocked?.need ?? ''}${record.blocked?.waitFor === 'human' ? ' (waiting for a human)' : ''}${record.result ? `\n\n${record.result}` : ''}`;
+
 export const delegationResultBody = (record: Delegation) =>
   (record.state === 'completed'
     ? (record.result ?? '')
-    : record.failure === 'check' && record.result
-      ? `${record.error ?? 'check'}\n\n${record.result}`
-      : (record.error ?? record.failure ?? record.state)) + missedAppends(record);
+    : record.state === 'blocked'
+      ? blockedBody(record)
+      : record.failure === 'check' && record.result
+        ? `${record.error ?? 'check'}\n\n${record.result}`
+        : (record.error ?? record.failure ?? record.state)) + missedAppends(record);
 
 export function batchResultText(batch: readonly Delegation[], nameOf: NameOf): string {
   const items = batch.map(
@@ -66,13 +71,15 @@ const stateLabel = (record: Delegation) =>
     ? '已完成'
     : record.state === 'canceled'
       ? '已取消'
-      : record.failure === 'timeout'
-        ? '已超时'
-        : record.failure === 'interrupted'
-          ? '已中断'
-          : record.failure === 'check'
-            ? '验收未通过'
-            : '执行失败';
+      : record.state === 'blocked'
+        ? '卡住了'
+        : record.failure === 'timeout'
+          ? '已超时'
+          : record.failure === 'interrupted'
+            ? '已中断'
+            : record.failure === 'check'
+              ? '验收未通过'
+              : '执行失败';
 
 /** 批次里还有未到终态的成员时，提示谁结束了、还在等谁 */
 export function batchWaitingNotice(

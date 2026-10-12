@@ -4,6 +4,7 @@ import {
   GROUP_TASK_TITLE_MAX,
   stalledTaskRun,
   TASK_CHECK_TEXT_MAX,
+  taskBlock,
 } from '@shared/types/bot';
 import {
   Check,
@@ -12,6 +13,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Send,
   Trash2,
   Undo2,
   UserPlus,
@@ -158,6 +160,18 @@ export function TaskBoard({
       onReturn={(rework) => setReturning({ task, rework })}
       onCancel={() => void run(() => api.cancel(ref(task)), t('Task not updated'))}
       onDelete={() => setDeleting(task)}
+      onReply={(text) =>
+        api.reply({ ...ref(task), text }).then((result) => {
+          void useBotsStore.getState().refreshTasks(chat.id);
+          if (!result.ok)
+            addToast({
+              type: 'error',
+              title: t('Reply not sent'),
+              description: taskErrorText(result.error, t),
+            });
+          return result.ok;
+        })
+      }
     />
   );
   return (
@@ -179,6 +193,11 @@ export function TaskBoard({
       {columns.doing.length > 0 && (
         <Group title={t('Doing')} count={columns.doing.length}>
           {() => columns.doing.map(card)}
+        </Group>
+      )}
+      {columns.blocked.length > 0 && (
+        <Group title={t('Stuck tasks')} count={columns.blocked.length}>
+          {() => columns.blocked.map(card)}
         </Group>
       )}
       {columns.review.length > 0 && (
@@ -258,6 +277,7 @@ function TaskCard({
   onReturn,
   onCancel,
   onDelete,
+  onReply,
   failed,
 }: {
   task: GroupTask;
@@ -274,12 +294,15 @@ function TaskCard({
   onReturn: (rework: boolean) => void;
   onCancel: () => void;
   onDelete: () => void;
+  /** 任务卡回复框：缺信息卡住时解除，执行中插入当前执行，其他状态记评论 */
+  onReply: (text: string) => Promise<boolean>;
 }) {
   const { t } = useI18n();
-  const open = task.status === 'todo' || task.status === 'doing';
+  const open = task.status === 'todo' || task.status === 'doing' || task.status === 'blocked';
   const review = task.status === 'review';
   // 执行失败：仍由执行人负责，只能重试、改派或取消
   const stalled = stalledTaskRun(task);
+  const block = taskBlock(task);
   const assignee = task.assigneeBotId ? bots.get(task.assigneeBotId) : undefined;
   const creator =
     task.createdBy === 'human' ? t('You') : (bots.get(task.createdBy)?.name ?? t('Deleted member'));
@@ -303,26 +326,28 @@ function TaskCard({
               <Pencil />
               {t('Edit')}
             </MenuItem>
-            {open && (!task.delegationId || stalled) && members.length > 0 && (
-              <MenuSub>
-                <MenuSubTrigger>
-                  <UserPlus />
-                  {stalled ? t('Reassign to') : t('Assign to')}
-                </MenuSubTrigger>
-                <MenuSubPopup>
-                  {members.map((bot) => (
-                    <MenuItem
-                      key={bot.id}
-                      disabled={bot.id === task.assigneeBotId}
-                      onClick={() => onAssign(bot.id)}
-                    >
-                      <BotAvatar bot={bot} size="xs" />
-                      {bot.name}
-                    </MenuItem>
-                  ))}
-                </MenuSubPopup>
-              </MenuSub>
-            )}
+            {open &&
+              (!task.delegationId || task.status === 'blocked' || stalled) &&
+              members.length > 0 && (
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <UserPlus />
+                    {stalled ? t('Reassign to') : t('Assign to')}
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    {members.map((bot) => (
+                      <MenuItem
+                        key={bot.id}
+                        disabled={bot.id === task.assigneeBotId}
+                        onClick={() => onAssign(bot.id)}
+                      >
+                        <BotAvatar bot={bot} size="xs" />
+                        {bot.name}
+                      </MenuItem>
+                    ))}
+                  </MenuSubPopup>
+                </MenuSub>
+              )}
             {open && !stalled && (
               <MenuItem onClick={onComplete}>
                 <Check />
@@ -370,7 +395,7 @@ function TaskCard({
       {stalled && (
         <div className="mt-1 rounded bg-destructive/10 px-1.5 py-1 text-foreground">
           <div className="line-clamp-3 whitespace-pre-wrap">
-            {t('Run failed: {{reason}}', {
+            {t('Blocked · run failed: {{reason}}', {
               reason: (failed?.state === 'failed' && failureText(failed, t)) || t('Failed'),
             })}
           </div>
@@ -384,6 +409,25 @@ function TaskCard({
             {t('Retry')}
           </Button>
         </div>
+      )}
+      {block?.reason === 'need' && (
+        <div className="mt-1 rounded bg-warning/10 px-1.5 py-1 text-foreground">
+          <div className="line-clamp-3 whitespace-pre-wrap">
+            {t('Blocked · needs: {{need}}', { need: block.need })}
+          </div>
+        </div>
+      )}
+      {(block?.reason === 'need' || review || (task.status === 'doing' && task.delegationId)) && (
+        <TaskReply
+          placeholder={
+            block?.reason === 'need'
+              ? t('Answer {{name}}…', { name: assignee?.name ?? t('Deleted member') })
+              : task.status === 'doing' && task.delegationId
+                ? t('Add to the current run…')
+                : t('Comment…')
+          }
+          onSend={onReply}
+        />
       )}
       {task.check && <CheckBadge check={task.check} className="mt-1" />}
       {review && (
@@ -420,6 +464,53 @@ function TaskCard({
       {task.runs && task.runs.length > 0 && (
         <TaskRuns runs={task.runs} bots={bots} onOpenConversation={onOpenConversation} />
       )}
+    </div>
+  );
+}
+
+/** 任务卡回复框（最小可用版） */
+function TaskReply({
+  placeholder,
+  onSend,
+}: {
+  placeholder: string;
+  onSend: (text: string) => Promise<boolean>;
+}) {
+  const { t } = useI18n();
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const send = async () => {
+    const value = text.trim();
+    if (!value || sending) return;
+    setSending(true);
+    if (await onSend(value)) setText('');
+    setSending(false);
+  };
+  return (
+    <div className="mt-1 flex items-end gap-1">
+      <Textarea
+        value={text}
+        rows={1}
+        maxLength={GROUP_TASK_TEXT_MAX}
+        placeholder={placeholder}
+        className="min-h-0 text-xs"
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            void send();
+          }
+        }}
+      />
+      <Button
+        size="icon-xs"
+        variant="ghost"
+        aria-label={t('Send reply')}
+        disabled={!text.trim() || sending}
+        onClick={() => void send()}
+      >
+        <Send />
+      </Button>
     </div>
   );
 }

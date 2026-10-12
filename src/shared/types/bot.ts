@@ -104,7 +104,15 @@ export interface BotChat {
   version: number;
 }
 
-export const DELEGATION_STATES = ['queued', 'running', 'completed', 'failed', 'canceled'] as const;
+/** blocked：执行人用 report_blocked 登记缺信息后结束本轮（schemaVersion 2） */
+export const DELEGATION_STATES = [
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'canceled',
+  'blocked',
+] as const;
 /** 一次执行的来源；缺省按 delegate */
 export const DELEGATION_TRIGGERS = ['delegate', 'append', 'reply', 'rework', 'retry'] as const;
 export type DelegationTrigger = (typeof DELEGATION_TRIGGERS)[number];
@@ -113,6 +121,16 @@ export const DELEGATION_TIMEOUT_MINUTES = 240;
 export const DELEGATION_TIMEOUT_MAX_MINUTES = 1440;
 /** 一次执行最多并入的追加 */
 export const DELEGATION_APPENDS_MAX = 20;
+export const DELEGATION_BLOCKED_NEED_MAX = 300;
+/** 登记卡住后这么久本轮还没收尾，就只中止当前回合（软停止） */
+export const DELEGATION_BLOCKED_STOP_MINUTES = 5;
+
+/** 执行人登记的卡住：缺什么、等谁（parent = 发起方成员，human = 人） */
+export interface DelegationBlocked {
+  need: string;
+  waitFor: 'human' | 'parent';
+  at: number;
+}
 
 /** 并入执行中的追加；ok 缺省 = 还没跑完，true = 已在本次执行里处理，false = 未送达或执行结束前没跑完 */
 export interface DelegationAppend {
@@ -174,6 +192,8 @@ export interface Delegation {
   startedAt?: number;
   /** 同一发起会话对执行中的本任务追加的要求（不另开执行） */
   appends?: DelegationAppend[];
+  /** report_blocked 登记；本轮结束时执行记为 blocked */
+  blocked?: DelegationBlocked;
 }
 
 export function parseDelegation(value: unknown): Delegation | undefined {
@@ -242,6 +262,17 @@ export function parseDelegation(value: unknown): Delegation | undefined {
     );
     if (appends.length) record.appends = appends.slice(-DELEGATION_APPENDS_MAX);
   }
+  if (
+    isObject(value.blocked) &&
+    isText(value.blocked.need) &&
+    (value.blocked.waitFor === 'human' || value.blocked.waitFor === 'parent') &&
+    isTime(value.blocked.at)
+  )
+    record.blocked = {
+      need: value.blocked.need.slice(0, DELEGATION_BLOCKED_NEED_MAX),
+      waitFor: value.blocked.waitFor,
+      at: value.blocked.at,
+    };
   if (value.effectivePermissions !== undefined) {
     const permissions = value.effectivePermissions;
     if (
@@ -820,9 +851,20 @@ export function parseBotRoutineRun(value: unknown): BotRoutineRun | undefined {
   return run;
 }
 
-/** review：委派交付、执行人不是创建人时待创建人或人类验收 */
-export const GROUP_TASK_STATUSES = ['todo', 'doing', 'review', 'done', 'canceled'] as const;
+/** review：委派交付、执行人不是创建人时待创建人或人类验收；blocked：卡住（缺信息 / 执行失败，schemaVersion 2） */
+export const GROUP_TASK_STATUSES = [
+  'todo',
+  'doing',
+  'review',
+  'done',
+  'canceled',
+  'blocked',
+] as const;
 export type GroupTaskStatus = (typeof GROUP_TASK_STATUSES)[number];
+export const GROUP_TASK_BLOCKED_REASONS = ['need', 'failed'] as const;
+export type GroupTaskBlockedReason = (typeof GROUP_TASK_BLOCKED_REASONS)[number];
+/** 同一「任务 × 成员」连续缺信息卡住这么多次后只接受人来解除 */
+export const GROUP_TASK_BLOCKED_STREAK_MAX = 3;
 export const GROUP_TASK_TITLE_MAX = 200;
 export const GROUP_TASK_TEXT_MAX = 4000;
 export const GROUP_TASK_RUNS_MAX = 30;
@@ -866,15 +908,46 @@ export interface GroupTask {
   runs?: GroupTaskRun[];
   /** 成员 → 该任务的委派子会话 */
   sessions?: Record<BotId, string>;
+  /** status 为 blocked 时：need = 执行人缺信息，failed = 执行失败（原因见当前执行） */
+  blockedReason?: GroupTaskBlockedReason;
+  /** 缺什么（blockedReason 为 need 时） */
+  blockedNeed?: string;
+  /** 成员 → 在本任务上连续缺信息卡住的次数；交付后清零，执行失败不计 */
+  blockedStreak?: Record<BotId, number>;
   createdAt: number;
   updatedAt: number;
 }
 
-/** 任务当前挂的执行已失败：仍由执行人负责，只能重试、改派或取消 */
+/** 任务卡在执行失败上：仍由执行人负责，只能重试、改派或取消（含 P2 旧数据：doing + 当前执行失败） */
 export function stalledTaskRun(task: GroupTask): GroupTaskRun | undefined {
-  if (task.status !== 'doing' || !task.delegationId) return undefined;
+  if (!task.delegationId) return undefined;
+  if (task.status === 'blocked' ? task.blockedReason === 'need' : task.status !== 'doing')
+    return undefined;
   const run = task.runs?.find((item) => item.id === task.delegationId);
-  return run?.state === 'failed' ? run : undefined;
+  if (run?.state === 'failed') return run;
+  return task.status === 'blocked'
+    ? {
+        id: task.delegationId,
+        botId: task.assigneeBotId ?? '',
+        trigger: 'delegate',
+        state: 'failed',
+        failure: 'error',
+        createdAt: task.updatedAt,
+      }
+    : undefined;
+}
+
+/** 任务为什么卡住；没卡住返回 undefined */
+export function taskBlock(
+  task: GroupTask
+):
+  | { reason: 'need'; need: string }
+  | { reason: 'failed'; failure: NonNullable<Delegation['failure']> }
+  | undefined {
+  if (task.status === 'blocked' && task.blockedReason === 'need')
+    return { reason: 'need', need: task.blockedNeed ?? '' };
+  const run = stalledTaskRun(task);
+  return run ? { reason: 'failed', failure: run.failure ?? 'error' } : undefined;
 }
 
 export const TASK_CHECK_TEXT_MAX = 200;
@@ -939,6 +1012,17 @@ export function parseGroupTask(value: unknown): GroupTask | undefined {
       (entry): entry is [BotId, string] => isBotId(entry[0]) && isText(entry[1])
     );
     if (sessions.length) task.sessions = Object.fromEntries(sessions);
+  }
+  if (GROUP_TASK_BLOCKED_REASONS.includes(value.blockedReason as never))
+    task.blockedReason = value.blockedReason as GroupTaskBlockedReason;
+  if (isText(value.blockedNeed))
+    task.blockedNeed = value.blockedNeed.slice(0, DELEGATION_BLOCKED_NEED_MAX);
+  if (isObject(value.blockedStreak)) {
+    const streak = Object.entries(value.blockedStreak).filter(
+      (entry): entry is [BotId, number] =>
+        isBotId(entry[0]) && Number.isSafeInteger(entry[1]) && (entry[1] as number) > 0
+    );
+    if (streak.length) task.blockedStreak = Object.fromEntries(streak);
   }
   return task;
 }
