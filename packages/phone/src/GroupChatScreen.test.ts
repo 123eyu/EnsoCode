@@ -129,13 +129,53 @@ describe('phone group recovery and folding UI', () => {
       timeline: { entries: [...entries, progress], lastSeq: 5, hasOlder: false },
     });
     expect(html).toContain('Bob');
-    expect(html).toContain('开工 #3『登录页』');
+    expect(html.replace(/<[^>]+>/g, '')).toContain('开工 #3『登录页』');
     const future = { ...progress, kind: 'from-the-future' } as unknown as PairGroupEntry;
     const old = render({
       timeline: { entries: [...entries, future], lastSeq: 5, hasOlder: false },
     });
     expect(old).toContain('CURRENT_TASK');
     expect(old).not.toContain('开工 #3');
+  });
+
+  it('styles progress by phase and marks #N; task-bound delegation results start collapsed', () => {
+    const delegation = (seq: number, taskId?: string) =>
+      ({
+        id: `d${seq}`,
+        seq,
+        at: seq,
+        kind: 'delegation',
+        delegationId: `d${seq}`,
+        from: 'boss',
+        to: 'bot',
+        state: 'completed',
+        summary: `RESULT_${seq}`,
+        ...(taskId ? { taskId } : {}),
+      }) as PairGroupEntry;
+    const progress = {
+      id: 'p',
+      seq: 7,
+      at: 7,
+      kind: 'progress',
+      botId: 'bot',
+      taskId: 't',
+      taskSeq: 3,
+      delegationId: 'd5',
+      phase: 'delivered',
+      text: '交付 #3：登录页做完了',
+    } as PairGroupEntry;
+    const html = render({
+      timeline: {
+        entries: [...entries, delegation(5, 't'), delegation(6), progress],
+        lastSeq: 7,
+        hasOlder: false,
+      },
+    });
+    expect(html).toContain('data-phase="delivered"');
+    expect(html).toMatch(/<span[^>]*>#3<\/span>/);
+    expect(html).not.toContain('RESULT_5');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('RESULT_6');
   });
 
   it('shows the mic button only when voice is provided', () => {

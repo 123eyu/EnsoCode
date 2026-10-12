@@ -5,6 +5,7 @@ import type {
   DelegationState,
   TaskCheck,
 } from '@shared/types/bot';
+import { ChevronRight } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { addToast } from '@/components/ui/toast';
@@ -122,7 +123,15 @@ export function useNow(active: boolean): number {
 interface DelegationCardProps {
   /** 委派记录；时间线旧条目找不到记录时只按条目渲染 */
   record?: Delegation;
-  entry?: { from: string; to: string; state: DelegationState; summary?: string; at: number };
+  entry?: {
+    from: string;
+    to: string;
+    state: DelegationState;
+    summary?: string;
+    at: number;
+    /** 挂了看板任务的结果卡：群里已有进度行，默认折叠 */
+    taskId?: string;
+  };
   /** 已被重试：不再给重试按钮 */
   retried?: boolean;
   /** 并入 record 这次执行的追加：标「已并入」，不单独显示状态与结果 */
@@ -160,6 +169,8 @@ export function DelegationCard({
       : false
   );
   const openTask = useBotsStore((s) => s.openTask);
+  const collapsible = Boolean(entry?.taskId) && !append;
+  const [open, setOpen] = useState(!collapsible);
   const summary = append
     ? undefined
     : record
@@ -173,104 +184,133 @@ export function DelegationCard({
     from: from?.name ?? t('Deleted member'),
     to: to?.name ?? t('Deleted member'),
   });
+  const header = (
+    <>
+      {collapsible && (
+        <ChevronRight
+          aria-hidden
+          className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')}
+        />
+      )}
+      <BotAvatar bot={from} size="xs" />
+      <span className="text-foreground">{from?.name ?? t('Deleted member')}</span>
+      <span>→</span>
+      <BotAvatar bot={to} size="xs" presence={presence?.state} />
+      <span className="text-foreground">{to?.name ?? t('Deleted member')}</span>
+      <span>· {t('Delegation')}</span>
+      {append ? (
+        <span className="rounded bg-info/15 px-1.5 text-[11px] text-info">
+          {taskSeq === undefined
+            ? t('Merged into the current run')
+            : t('Merged into the current run of #{{n}}', { n: taskSeq })}
+        </span>
+      ) : active ? (
+        <PresenceChip info={presence} />
+      ) : (
+        <DelegationBadge state={state} interrupted={record?.failure === 'interrupted'} />
+      )}
+      {record && !append && (
+        <span>{formatElapsed((record.finishedAt ?? now) - record.createdAt)}</span>
+      )}
+      <span className="flex-1" />
+      <span>{timeOf(append?.at ?? entry?.at ?? record?.createdAt ?? now)}</span>
+    </>
+  );
+  const headerClass =
+    'flex flex-wrap items-center gap-1.5 whitespace-nowrap text-muted-foreground text-xs';
+  const task = append?.text ?? record?.task;
   return (
     <div data-slot="bot-card" className="max-w-lg rounded-xl border bg-card px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-1.5 whitespace-nowrap text-muted-foreground text-xs">
-        <BotAvatar bot={from} size="xs" />
-        <span className="text-foreground">{from?.name ?? t('Deleted member')}</span>
-        <span>→</span>
-        <BotAvatar bot={to} size="xs" presence={presence?.state} />
-        <span className="text-foreground">{to?.name ?? t('Deleted member')}</span>
-        <span>· {t('Delegation')}</span>
-        {append ? (
-          <span className="rounded bg-info/15 px-1.5 text-[11px] text-info">
-            {taskSeq === undefined
-              ? t('Merged into the current run')
-              : t('Merged into the current run of #{{n}}', { n: taskSeq })}
-          </span>
-        ) : active ? (
-          <PresenceChip info={presence} />
-        ) : (
-          <DelegationBadge state={state} interrupted={record?.failure === 'interrupted'} />
-        )}
-        {record && !append && (
-          <span>{formatElapsed((record.finishedAt ?? now) - record.createdAt)}</span>
-        )}
-        <span className="flex-1" />
-        <span>{timeOf(append?.at ?? entry?.at ?? record?.createdAt ?? now)}</span>
-      </div>
-      {(append?.text ?? record?.task) && (
-        <div className="mt-1.5 line-clamp-3 text-sm">{append?.text ?? record?.task}</div>
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? t('Collapse delegation result') : t('Expand delegation result')}
+          className={cn(headerClass, 'w-full rounded text-left hover:text-foreground')}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {header}
+        </button>
+      ) : (
+        <div className={headerClass}>{header}</div>
       )}
-      {record?.check && !append && <CheckBadge check={record.check} className="mt-1.5" />}
-      {summary && (
-        <div className="mt-1.5 line-clamp-4 whitespace-pre-wrap text-muted-foreground text-xs">
-          {summary}
-        </div>
-      )}
-      {blocked && record && (
-        <div className="mt-1.5 rounded-md bg-warning/10 px-2 py-1 text-xs">
-          <div className="line-clamp-4 whitespace-pre-wrap">
-            {t('Blocked · needs: {{need}}', { need: blocked.need })}
-          </div>
-          <div className="text-muted-foreground">
-            {answered
-              ? t('Answered; the work continues')
-              : blocked.waitFor === 'parent'
-                ? t('Waiting for {{name}} to reply', { name: from?.name ?? t('Deleted member') })
-                : t('Waiting for your reply')}
-          </div>
-        </div>
-      )}
-      {record && (
-        <div className="mt-2 flex justify-end gap-1.5">
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={() => onOpenConversation(record.childConversationId, title)}
-          >
-            {t('View process')}
-          </Button>
-          {blocked && !answered && record.chatId && record.taskId && (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() =>
-                record.chatId && record.taskId && openTask(record.chatId, record.taskId)
-              }
-            >
-              {t('Reply')}
-            </Button>
+      {!open && task && <div className="mt-1 truncate text-muted-foreground text-xs">{task}</div>}
+      {open && task && <div className="mt-1.5 line-clamp-3 text-sm">{task}</div>}
+      {open && (
+        <>
+          {record?.check && !append && <CheckBadge check={record.check} className="mt-1.5" />}
+          {summary && (
+            <div className="mt-1.5 line-clamp-4 whitespace-pre-wrap text-muted-foreground text-xs">
+              {summary}
+            </div>
           )}
-          {actions.cancel && (
-            <Button size="xs" variant="outline" onClick={() => cancelDelegation(record.id, t)}>
-              {t('Cancel')}
-            </Button>
+          {blocked && record && (
+            <div className="mt-1.5 rounded-md bg-warning/10 px-2 py-1 text-xs">
+              <div className="line-clamp-4 whitespace-pre-wrap">
+                {t('Blocked · needs: {{need}}', { need: blocked.need })}
+              </div>
+              <div className="text-muted-foreground">
+                {answered
+                  ? t('Answered; the work continues')
+                  : blocked.waitFor === 'parent'
+                    ? t('Waiting for {{name}} to reply', {
+                        name: from?.name ?? t('Deleted member'),
+                      })
+                    : t('Waiting for your reply')}
+              </div>
+            </div>
           )}
-          {actions.retry && !retried && (
-            <Button size="xs" variant="outline" onClick={() => retryDelegation(record.id, t)}>
-              {t('Retry')}
-            </Button>
-          )}
-          {actions.resumeOrRestart && !retried && (
-            <>
+          {record && (
+            <div className="mt-2 flex justify-end gap-1.5">
               <Button
                 size="xs"
-                variant="outline"
-                onClick={() => retryDelegation(record.id, t, 'resume')}
+                variant="ghost"
+                onClick={() => onOpenConversation(record.childConversationId, title)}
               >
-                {t('Continue')}
+                {t('View process')}
               </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => retryDelegation(record.id, t, 'restart')}
-              >
-                {t('Start over')}
-              </Button>
-            </>
+              {blocked && !answered && record.chatId && record.taskId && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    record.chatId && record.taskId && openTask(record.chatId, record.taskId)
+                  }
+                >
+                  {t('Reply')}
+                </Button>
+              )}
+              {actions.cancel && (
+                <Button size="xs" variant="outline" onClick={() => cancelDelegation(record.id, t)}>
+                  {t('Cancel')}
+                </Button>
+              )}
+              {actions.retry && !retried && (
+                <Button size="xs" variant="outline" onClick={() => retryDelegation(record.id, t)}>
+                  {t('Retry')}
+                </Button>
+              )}
+              {actions.resumeOrRestart && !retried && (
+                <>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => retryDelegation(record.id, t, 'resume')}
+                  >
+                    {t('Continue')}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => retryDelegation(record.id, t, 'restart')}
+                  >
+                    {t('Start over')}
+                  </Button>
+                </>
+              )}
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );

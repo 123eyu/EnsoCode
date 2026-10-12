@@ -1,10 +1,15 @@
 import { retryableGroupFailures } from '@shared/bots/groupRetry';
+import { splitTaskRef } from '@shared/bots/progress';
 import type { ProjectedMessage } from '@shared/types/agent';
 import type { BotChat, BotProfile, BotRoutedBy, Delegation, GroupEntry } from '@shared/types/bot';
 import {
   ArrowDown,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  CirclePlay,
+  CircleX,
   Loader2,
   MessagesSquare,
   Sparkles,
@@ -546,24 +551,15 @@ const EntryRow = memo(function EntryRow({
           )}
         </div>
       );
-    case 'progress': {
-      const bot = bots.get(entry.botId);
+    case 'progress':
       return (
-        <div
-          data-slot="bot-progress"
-          className="flex items-center gap-2 text-muted-foreground text-xs"
-        >
-          <BotAvatar bot={bot} size="sm" />
-          <span className="shrink-0 font-medium text-foreground">
-            {bot?.name ?? t('Deleted member')}
-          </span>
-          <span className="min-w-0 truncate">
-            <MentionText text={entry.text} bots={bots} />
-          </span>
-          <span className="shrink-0">{timeOf(entry.at)}</span>
-        </div>
+        <ProgressRow
+          chatId={chatId}
+          entry={entry}
+          bots={bots}
+          failed={records.get(entry.delegationId)?.record.state === 'failed'}
+        />
       );
-    }
     case 'delegation':
       return (
         <DelegationCard
@@ -626,6 +622,66 @@ const EntryRow = memo(function EntryRow({
     }
   }
 });
+
+const PROGRESS_TONE = {
+  started: { icon: CirclePlay, className: 'border-brand/50 text-brand' },
+  blocked: { icon: CircleAlert, className: 'border-warning/60 text-warning' },
+  failed: { icon: CircleX, className: 'border-destructive/60 text-destructive' },
+  delivered: { icon: CircleCheck, className: 'border-success/60 text-success' },
+} as const;
+
+/** 开工 / 卡住 / 交付进度：一行，#N 可点打开看板上的任务卡 */
+function ProgressRow({
+  chatId,
+  entry,
+  bots,
+  failed,
+}: {
+  chatId: string;
+  entry: Extract<GroupEntry, { kind: 'progress' }>;
+  bots: Map<string, BotProfile>;
+  failed: boolean;
+}) {
+  const { t } = useI18n();
+  const openTask = useBotsStore((s) => s.openTask);
+  const bot = bots.get(entry.botId);
+  const tone = PROGRESS_TONE[entry.phase === 'blocked' && failed ? 'failed' : entry.phase];
+  const Icon = tone.icon;
+  const ref = splitTaskRef(entry.text, entry.taskSeq);
+  return (
+    <div data-slot="bot-progress" data-phase={entry.phase} className="flex w-full gap-2.5">
+      <BotAvatar bot={bot} size="sm" />
+      <div
+        className={cn(
+          'flex min-w-0 max-w-lg items-start gap-1.5 rounded-md border-l-2 bg-muted/50 px-2 py-1 text-xs',
+          tone.className
+        )}
+      >
+        <Icon aria-hidden className="mt-px size-3.5 shrink-0" />
+        <div className="line-clamp-2 min-w-0 break-words text-muted-foreground">
+          <span className="font-medium text-foreground">{bot?.name ?? t('Deleted member')}</span>{' '}
+          {ref ? (
+            <>
+              <MentionText text={ref[0]} bots={bots} />
+              <button
+                type="button"
+                aria-label={t('Open task card #{{n}}', { n: entry.taskSeq })}
+                className="rounded px-0.5 font-medium text-foreground underline decoration-dotted underline-offset-2 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openTask(chatId, entry.taskId)}
+              >
+                {ref[1]}
+              </button>
+              <MentionText text={ref[2]} bots={bots} />
+            </>
+          ) : (
+            <MentionText text={entry.text} bots={bots} />
+          )}
+        </div>
+        <span className="shrink-0 text-[11px] text-muted-foreground">{timeOf(entry.at)}</span>
+      </div>
+    </div>
+  );
+}
 
 function MentionText({ text, bots }: { text: string; bots: Map<string, BotProfile> }) {
   const parts = useMemo(() => {
