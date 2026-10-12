@@ -105,6 +105,10 @@ export interface BotChat {
 }
 
 export const DELEGATION_STATES = ['queued', 'running', 'completed', 'failed', 'canceled'] as const;
+/** 一次执行的来源；缺省按 delegate */
+export const DELEGATION_TRIGGERS = ['delegate', 'append', 'reply', 'rework', 'retry'] as const;
+export type DelegationTrigger = (typeof DELEGATION_TRIGGERS)[number];
+export const DELEGATION_FAILURES = ['interrupted', 'timeout', 'denied', 'error', 'check'] as const;
 export const DELEGATION_TIMEOUT_MINUTES = 240;
 export const DELEGATION_TIMEOUT_MAX_MINUTES = 1440;
 
@@ -135,7 +139,7 @@ export interface Delegation {
   context: string;
   childConversationId: string;
   state: DelegationState;
-  failure?: 'interrupted' | 'timeout' | 'denied' | 'error' | 'check';
+  failure?: (typeof DELEGATION_FAILURES)[number];
   error?: string;
   result?: string;
   deliveredAt?: number;
@@ -155,6 +159,9 @@ export interface Delegation {
   keep?: true;
   /** 验收条件；终态时记 passed，未通过为 failed + failure:'check' */
   check?: TaskCheck;
+  trigger?: DelegationTrigger;
+  /** queued → running 的时刻 */
+  startedAt?: number;
 }
 
 export function parseDelegation(value: unknown): Delegation | undefined {
@@ -191,14 +198,8 @@ export function parseDelegation(value: unknown): Delegation | undefined {
     depth: Number(value.depth),
     createdAt: value.createdAt,
   };
-  if (
-    value.failure === 'interrupted' ||
-    value.failure === 'timeout' ||
-    value.failure === 'denied' ||
-    value.failure === 'error' ||
-    value.failure === 'check'
-  )
-    record.failure = value.failure;
+  if (DELEGATION_FAILURES.includes(value.failure as never))
+    record.failure = value.failure as Delegation['failure'];
   if (typeof value.error === 'string') record.error = value.error;
   if (typeof value.result === 'string') record.result = value.result;
   if (isTime(value.deliveredAt)) record.deliveredAt = value.deliveredAt;
@@ -211,6 +212,9 @@ export function parseDelegation(value: unknown): Delegation | undefined {
   if (value.keep === true) record.keep = true;
   const check = parseTaskCheck(value.check);
   if (check) record.check = check;
+  if (DELEGATION_TRIGGERS.includes(value.trigger as never))
+    record.trigger = value.trigger as DelegationTrigger;
+  if (isTime(value.startedAt)) record.startedAt = value.startedAt;
   if (value.effectivePermissions !== undefined) {
     const permissions = value.effectivePermissions;
     if (
@@ -791,6 +795,22 @@ export const GROUP_TASK_STATUSES = ['todo', 'doing', 'review', 'done', 'canceled
 export type GroupTaskStatus = (typeof GROUP_TASK_STATUSES)[number];
 export const GROUP_TASK_TITLE_MAX = 200;
 export const GROUP_TASK_TEXT_MAX = 4000;
+export const GROUP_TASK_RUNS_MAX = 30;
+
+/** 任务的一次执行（委派记录）摘要 */
+export interface GroupTaskRun {
+  /** 委派记录 id */
+  id: string;
+  botId: BotId;
+  trigger: DelegationTrigger;
+  state: DelegationState;
+  failure?: Delegation['failure'];
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  /** 执行人转派出去的嵌套执行（深度 2） */
+  nested?: true;
+}
 
 /** userData/bot-chats/<chatId>/tasks.jsonl 的一条快照；seq 群内自增，显示为 #N */
 export interface GroupTask {
@@ -810,6 +830,10 @@ export interface GroupTask {
   check?: TaskCheck;
   /** 成员认领 / 被指派的时间：complete 验收只看此后的工具结果 */
   claimedAt?: number;
+  /** 历次执行摘要，按发起先后，只留最近 GROUP_TASK_RUNS_MAX 条 */
+  runs?: GroupTaskRun[];
+  /** 成员 → 该任务的委派子会话 */
+  sessions?: Record<BotId, string>;
   createdAt: number;
   updatedAt: number;
 }
@@ -867,5 +891,40 @@ export function parseGroupTask(value: unknown): GroupTask | undefined {
   const check = parseTaskCheck(value.check);
   if (check) task.check = check;
   if (isTime(value.claimedAt)) task.claimedAt = value.claimedAt;
+  if (Array.isArray(value.runs)) {
+    const runs = value.runs.flatMap((item) => parseGroupTaskRun(item) ?? []);
+    if (runs.length) task.runs = runs.slice(-GROUP_TASK_RUNS_MAX);
+  }
+  if (isObject(value.sessions)) {
+    const sessions = Object.entries(value.sessions).filter(
+      (entry): entry is [BotId, string] => isBotId(entry[0]) && isText(entry[1])
+    );
+    if (sessions.length) task.sessions = Object.fromEntries(sessions);
+  }
   return task;
+}
+
+function parseGroupTaskRun(value: unknown): GroupTaskRun | undefined {
+  if (
+    !isObject(value) ||
+    !isBotId(value.id) ||
+    !isBotId(value.botId) ||
+    !DELEGATION_TRIGGERS.includes(value.trigger as never) ||
+    !DELEGATION_STATES.includes(value.state as never) ||
+    !isTime(value.createdAt)
+  )
+    return undefined;
+  const run: GroupTaskRun = {
+    id: value.id,
+    botId: value.botId,
+    trigger: value.trigger as DelegationTrigger,
+    state: value.state as DelegationState,
+    createdAt: value.createdAt,
+  };
+  if (DELEGATION_FAILURES.includes(value.failure as never))
+    run.failure = value.failure as Delegation['failure'];
+  if (isTime(value.startedAt)) run.startedAt = value.startedAt;
+  if (isTime(value.finishedAt)) run.finishedAt = value.finishedAt;
+  if (value.nested === true) run.nested = true;
+  return run;
 }
