@@ -64,3 +64,12 @@ it('normalizes optional nulls and boolean text before full typed schema validati
       expect(property).toHaveProperty('type');
   }
 });
+
+it('describes auto-created board tasks only for group sessions', () => {
+  const describe = (groupTasks: boolean) =>
+    createDelegationTools(new MemoryInvoker({ sessionId: 's', generation: 'g' }, () => {}), {
+      groupTasks,
+    }).find((tool) => tool.name === 'delegate')?.description ?? '';
+  expect(describe(true)).toContain('Without taskId, a new board task is created');
+  expect(describe(false)).not.toContain('board task');
+});

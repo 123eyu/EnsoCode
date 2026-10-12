@@ -605,6 +605,7 @@ export function getBotServices(): BotServices | null {
       if (!conversationId) throw new Error('member session unavailable');
       return conversationMessages(conversationId);
     },
+    delegations: () => delegationStore.list(),
   });
   host.onDiscard((scope) => {
     if (scope.botId) tasks.releaseBot(scope.botId);

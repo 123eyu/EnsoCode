@@ -5,9 +5,11 @@ import type { ProjectedMessage } from '../../../shared/types/agent';
 import {
   type BotChat,
   type Delegation,
+  GROUP_TASK_RUNS_MAX,
   GROUP_TASK_TEXT_MAX,
   GROUP_TASK_TITLE_MAX,
   type GroupTask,
+  type GroupTaskRun,
   parseTaskCheck,
   type TaskCheck,
 } from '../../../shared/types/bot';
@@ -21,7 +23,7 @@ import type { GroupTaskStore } from './groupTaskStore';
 export type TaskActor = string;
 export type TaskResult = { ok: true; task: GroupTask } | { ok: false; error: string };
 export type TaskGate =
-  | { ok: true; taskId: string; check?: TaskCheck }
+  | { ok: true; taskId: string; seq: number; check?: TaskCheck }
   | { ok: false; error: string };
 
 interface Deps {
@@ -34,6 +36,8 @@ interface Deps {
   cancelDelegation?: (id: string) => void;
   /** 成员在该群当前会话的消息（complete 验收读最终工具结果） */
   sessionMessages?: (chatId: string, botId: string) => Promise<readonly ProjectedMessage[]>;
+  /** 委派记录（旧任务没有 runs 时只读派生） */
+  delegations?: () => readonly Delegation[];
   now?: () => number;
 }
 
@@ -58,6 +62,29 @@ const pending = (check: TaskCheck | undefined) =>
 /** 进入 done 时清掉上次退回原因 */
 const settled = ({ returnReason: _reason, ...task }: GroupTask): GroupTask => task;
 const CHECK_INVALID = 'check must be { kind: "output-contains", text } with 1-200 characters.';
+const AUTO_TITLE_MAX = 60;
+
+function runOf(record: Delegation): GroupTaskRun {
+  return {
+    id: record.id,
+    botId: record.targetBotId,
+    trigger: record.trigger ?? 'delegate',
+    state: record.state,
+    ...(record.failure ? { failure: record.failure } : {}),
+    createdAt: record.createdAt,
+    ...(record.startedAt !== undefined ? { startedAt: record.startedAt } : {}),
+    ...(record.finishedAt !== undefined ? { finishedAt: record.finishedAt } : {}),
+    ...(record.depth > 1 ? { nested: true as const } : {}),
+  };
+}
+
+function sameRun(a: GroupTaskRun, b: GroupTaskRun): boolean {
+  const left: Record<string, unknown> = { ...a };
+  const right: Record<string, unknown> = { ...b };
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].every(
+    (key) => left[key] === right[key]
+  );
+}
 
 /**
  * 委派 → 任务状态机（纯函数）。返回 undefined 表示不变。
@@ -113,7 +140,12 @@ export class GroupTaskService {
   constructor(private readonly deps: Deps) {}
 
   list(chatId: string): GroupTask[] {
-    return this.group(chatId) ? this.deps.store.list(this.board(chatId)) : [];
+    if (!this.group(chatId)) return [];
+    return this.deps.store.list(this.board(chatId)).map((task) => {
+      if (task.runs) return task;
+      const runs = this.derivedRuns(task.id);
+      return runs.length ? { ...task, runs } : task;
+    });
   }
 
   add(
@@ -401,6 +433,29 @@ export class GroupTaskService {
     return { ok: true };
   }
 
+  /** 群里没给 taskId 的委派：静默建卡，标题取首个非空行，不调模型 */
+  open(
+    chatId: string,
+    botId: string,
+    text: string,
+    check?: TaskCheck
+  ): { taskId: string; seq: number } | undefined {
+    if (!this.group(chatId)) return undefined;
+    const line = text.split('\n').find((item) => item.trim()) ?? '';
+    const title = Array.from(line.trim()).slice(0, AUTO_TITLE_MAX).join('');
+    const task = this.deps.store.create(
+      this.board(chatId),
+      { title, detail: text, ...pending(check), createdBy: botId },
+      this.now()
+    );
+    return task && { taskId: task.id, seq: task.seq };
+  }
+
+  /** 撤销 open 建的卡（委派最终被拒） */
+  discard(chatId: string, taskId: string): void {
+    this.deps.store.remove(this.board(chatId), taskId);
+  }
+
   /** 委派带 taskId 前的校验：返回规范 taskId */
   gate(chatId: string | null, ref: string, parentBotId: string): TaskGate {
     if (!chatId || !this.group(chatId))
@@ -415,16 +470,24 @@ export class GroupTaskService {
       !task.delegationId &&
       (task.status === 'todo' || (task.status === 'doing' && task.assigneeBotId === parentBotId));
     return free
-      ? { ok: true, taskId: task.id, ...pending(task.check) }
+      ? { ok: true, taskId: task.id, seq: task.seq, ...pending(task.check) }
       : { ok: false, error: busy(task, this) };
   }
 
-  /** 委派记录每次落盘后调用：按状态机同步任务 */
-  sync(record: Delegation): void {
-    if (!record.taskId || !record.chatId || !this.group(record.chatId)) return;
-    const task = this.deps.store.find(this.board(record.chatId), record.taskId);
-    const next = task && taskAfterDelegation(task, record, this.now());
-    if (!task || !next) return;
+  /** 委派记录每次落盘后调用：按状态机同步任务并记执行摘要；nestedIn 为嵌套执行所属的上层任务 */
+  sync(record: Delegation, nestedIn?: string): void {
+    const taskId = record.taskId ?? nestedIn;
+    if (!taskId || !record.chatId || !this.group(record.chatId)) return;
+    const task = this.deps.store.find(this.board(record.chatId), taskId);
+    if (!task) return;
+    const now = this.now();
+    const linked = record.taskId ? taskAfterDelegation(task, record, now) : undefined;
+    const tracked = this.tracked(linked ?? task, record);
+    if (!linked) {
+      if (tracked) this.write(record.chatId, { ...tracked, updatedAt: now });
+      return;
+    }
+    const next = tracked ?? linked;
     const summary = next.result ? `：${short(next.result)}` : '';
     const target = this.name(record.targetBotId);
     const text = isActiveDelegation(record)
@@ -435,6 +498,37 @@ export class GroupTaskService {
           ? `${target} 交付了 ${label(task)}，待${this.name(task.createdBy)}验收${summary}`
           : `${target} 完成了 ${label(task)}${summary}`;
     this.write(record.chatId, next, text, record.parentBotId);
+  }
+
+  /** 把执行写进 runs，深度 1 的记执行人子会话；没变化返回 undefined */
+  private tracked(task: GroupTask, record: Delegation): GroupTask | undefined {
+    const run = runOf(record);
+    const runs = task.runs ?? this.derivedRuns(task.id);
+    const index = runs.findIndex((item) => item.id === run.id);
+    const runChanged = index < 0 || !sameRun(runs[index], run);
+    const session =
+      record.taskId &&
+      record.depth === 1 &&
+      task.sessions?.[record.targetBotId] !== record.childConversationId;
+    if (!runChanged && !session) return undefined;
+    const nextRuns =
+      index < 0 ? [...runs, run] : runs.map((item, at) => (at === index ? run : item));
+    return {
+      ...task,
+      runs: nextRuns.slice(-GROUP_TASK_RUNS_MAX),
+      ...(session
+        ? { sessions: { ...task.sessions, [record.targetBotId]: record.childConversationId } }
+        : {}),
+    };
+  }
+
+  /** 旧任务：按 taskId 从现存委派记录派生（只读） */
+  private derivedRuns(taskId: string): GroupTaskRun[] {
+    return (this.deps.delegations?.() ?? [])
+      .filter((record) => record.taskId === taskId)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-GROUP_TASK_RUNS_MAX)
+      .map(runOf);
   }
 
   /** 成员离开某群 / 被删除：其认领中的任务退回 todo */

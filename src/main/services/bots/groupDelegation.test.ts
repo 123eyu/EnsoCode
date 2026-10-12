@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AgentWorkerEvent } from '../../../shared/types/agent';
 import { SourceAuthorityRegistry } from '../sourceAuthorityRegistry';
 import { BotSessionHost } from './botSessionHost';
@@ -11,6 +11,8 @@ import { turnDelegationTargets } from './delegationBatch';
 import { DelegationService } from './delegationService';
 import { DelegationStore } from './delegationStore';
 import { GroupChatService } from './groupChat';
+import { GroupTaskStore } from './groupTaskStore';
+import { GroupTaskService } from './groupTasks';
 import type { MemberTaskClassifier } from './memberTaskClassifier';
 
 let root: string;
@@ -23,7 +25,11 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-function fixture(names = ['林经理', '阿后'], classifyMemberTask?: MemberTaskClassifier) {
+function fixture(
+  names = ['林经理', '阿后'],
+  classifyMemberTask?: MemberTaskClassifier,
+  withTasks = false
+) {
   const bots = new BotStore(join(root, 'bots'));
   // 全员只读：本文件只验证委派接力与回传，工作区写锁见 botSessionHost.lock.test
   const ids = names.map((name) => {
@@ -63,6 +69,15 @@ function fixture(names = ['林经理', '阿后'], classifyMemberTask?: MemberTas
     },
   });
   const store = new DelegationStore(join(root, 'bot-chats', 'delegations.jsonl'));
+  const tasks = withTasks
+    ? new GroupTaskService({
+        store: new GroupTaskStore(join(root, 'bot-chats')),
+        chats,
+        bots,
+        emit: () => {},
+        delegations: () => store.list(),
+      })
+    : undefined;
   const groups = new GroupChatService({
     bots,
     chats,
@@ -79,6 +94,7 @@ function fixture(names = ['林经理', '阿后'], classifyMemberTask?: MemberTas
       host,
       store,
       emit: () => {},
+      ...(tasks ? { tasks } : {}),
       deliverGroupResult: async (record, text, deliveryId) =>
         record.chatId &&
         chats.get(record.chatId)?.sessions[record.parentBotId]?.conversationId ===
@@ -126,6 +142,7 @@ function fixture(names = ['林经理', '阿后'], classifyMemberTask?: MemberTas
     host,
     groups,
     delegations,
+    tasks,
     makeDelegations,
     observe,
     start,
@@ -299,5 +316,131 @@ it('delivers a finished-but-undelivered batch once after restart', async () => {
   await settle();
   expect(f.to(boss)).toHaveLength(2);
   again.dispose();
+  f.groups.dispose();
+});
+
+async function bossTurn(f: ReturnType<typeof fixture>) {
+  await f.groups.send(f.chat.id, '安排一下', { deliveryId: 'human-1' });
+  await settle();
+  const boss = f.conversation(f.ids[0]);
+  f.start(boss);
+  return boss;
+}
+
+it('群主不带 taskId 委派：自动建卡挂上执行，交付后进待验收，返回 taskId', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const boss = await bossTurn(f);
+  const sent = f.delegations.delegate(boss, { to: '阿后', task: '修复登录页按钮\n颜色改成蓝色' });
+  if (!sent.ok) throw new Error(sent.error);
+  expect(sent.taskId).toBe('#1');
+  const child = f.child(sent.delegationId);
+  expect(f.tasks?.list(f.chat.id)).toMatchObject([
+    {
+      seq: 1,
+      title: '修复登录页按钮',
+      detail: '修复登录页按钮\n颜色改成蓝色',
+      createdBy: f.lin,
+      status: 'doing',
+      assigneeBotId: f.hou,
+      delegationId: sent.delegationId,
+      sessions: { [f.hou]: child },
+      runs: [{ id: sent.delegationId, botId: f.hou, trigger: 'delegate' }],
+    },
+  ]);
+  await settle();
+  f.start(child);
+  const startedAt = f.delegations.list()[0].startedAt;
+  expect(startedAt).toEqual(expect.any(Number));
+  expect(f.tasks?.list(f.chat.id)[0].runs).toMatchObject([{ state: 'running', startedAt }]);
+  f.reply(child, '改好了');
+  await settle();
+  expect(f.tasks?.list(f.chat.id)[0]).toMatchObject({
+    status: 'review',
+    result: '改好了',
+    runs: [{ state: 'completed', startedAt, finishedAt: expect.any(Number) }],
+  });
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('批量派活每人一张卡，标题取首行 60 字', async () => {
+  const f = fixture(['吴经理', '小设', '阿全'], undefined, true);
+  const boss = await bossTurn(f);
+  const sent = ['小设', '阿全'].map((to) =>
+    f.delegations.delegate(boss, { to, task: `${to}${'活'.repeat(70)}` })
+  );
+  expect(sent.map((result) => result.ok && result.taskId)).toEqual(['#1', '#2']);
+  expect(
+    f.tasks
+      ?.list(f.chat.id)
+      .map((task) => [task.title.length, task.assigneeBotId, task.delegationId])
+  ).toEqual([
+    [60, f.ids[1], sent[0].ok && sent[0].delegationId],
+    [60, f.ids[2], sent[1].ok && sent[1].delegationId],
+  ]);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('委派被拒不留卡：策略 / taskId 校验在建卡前拒绝，建卡后被拒删卡', async () => {
+  const f = fixture(['林经理', '阿后'], undefined, true);
+  const boss = await bossTurn(f);
+  expect(f.delegations.delegate(boss, { to: '林经理', task: 'x' })).toMatchObject({ ok: false });
+  expect(f.delegations.delegate(boss, { to: '阿后', task: 'x', taskId: '#9' })).toMatchObject({
+    ok: false,
+  });
+  vi.spyOn(f.host, 'registerDelegation').mockReturnValueOnce(false);
+  expect(f.delegations.delegate(boss, { to: '阿后', task: 'x' })).toEqual({
+    ok: false,
+    error: 'Delegation workspace unavailable.',
+  });
+  expect(f.tasks?.list(f.chat.id)).toEqual([]);
+  expect(f.delegations.list()).toEqual([]);
+  expect(f.entries().filter((entry) => entry.kind === 'system')).toEqual([]);
+  f.delegations.dispose();
+  f.groups.dispose();
+});
+
+it('深度 2 嵌套委派不建卡，只记进上层任务的 runs；重试不另建卡', async () => {
+  const f = fixture(['林经理', '阿后', '小三'], undefined, true);
+  const boss = await bossTurn(f);
+  const outer = f.delegations.delegate(boss, { to: '阿后', task: '查问题' });
+  if (!outer.ok) throw new Error(outer.error);
+  await settle();
+  const child = f.child(outer.delegationId);
+  f.start(child);
+  const inner = f.delegations.delegate(child, { to: '小三', task: '查日志' });
+  if (!inner.ok) throw new Error(inner.error);
+  expect(inner).not.toHaveProperty('taskId');
+  expect(
+    f.delegations.list().find((record) => record.id === inner.delegationId)
+  ).not.toHaveProperty('taskId');
+  await settle();
+  const grandchild = f.child(inner.delegationId);
+  f.start(grandchild);
+  f.reply(grandchild, '日志看完了');
+  await settle();
+  const [task, ...rest] = f.tasks?.list(f.chat.id) ?? [];
+  expect(rest).toEqual([]);
+  expect(task).toMatchObject({
+    status: 'doing',
+    delegationId: outer.delegationId,
+    sessions: { [f.ids[1]]: child },
+    runs: [
+      { id: outer.delegationId, botId: f.ids[1] },
+      { id: inner.delegationId, botId: f.ids[2], state: 'completed', nested: true },
+    ],
+  });
+  // 任务已被人取消：重试不再挂卡，也不新建卡
+  f.delegations.cancel(outer.delegationId);
+  f.tasks?.cancel(f.chat.id, 'human', '#1');
+  const retried = f.delegations.retry(outer.delegationId, 'restart');
+  if (!retried.ok) throw new Error(retried.error);
+  expect(retried).not.toHaveProperty('taskId');
+  expect(f.delegations.list().find((record) => record.id === retried.delegationId)).toMatchObject({
+    trigger: 'retry',
+  });
+  expect(f.tasks?.list(f.chat.id)).toHaveLength(1);
+  f.delegations.dispose();
   f.groups.dispose();
 });

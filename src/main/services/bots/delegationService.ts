@@ -35,14 +35,21 @@ interface Deps {
   emit: (event: BotEvent) => void;
   /** 一分钟的毫秒数，测试用来压缩时限 */
   minuteMs?: number;
-  /** 群任务看板联动：taskId 校验与每次落盘后的状态同步 */
+  /** 群任务看板联动：taskId 校验、自动建卡与每次落盘后的状态同步 */
   tasks?: {
     gate(
       chatId: string | null,
       ref: string,
       parentBotId: string
-    ): { ok: true; taskId: string; check?: TaskCheck } | { ok: false; error: string };
-    sync(record: Delegation): void;
+    ): { ok: true; taskId: string; seq: number; check?: TaskCheck } | { ok: false; error: string };
+    open(
+      chatId: string,
+      botId: string,
+      text: string,
+      check?: TaskCheck
+    ): { taskId: string; seq: number } | undefined;
+    discard(chatId: string, taskId: string): void;
+    sync(record: Delegation, nestedIn?: string): void;
   };
   /** 子会话当前分支消息（验收读最终工具结果） */
   sessionMessages?: (conversationId: string) => Promise<readonly ProjectedMessage[]>;
@@ -66,7 +73,7 @@ export interface DelegateInput {
   check?: TaskCheck;
 }
 export type DelegateResult =
-  | { ok: true; delegationId: string; warning?: string }
+  | { ok: true; delegationId: string; taskId?: string; warning?: string }
   | { ok: false; error: string };
 export type DelegationRetryMode = 'resume' | 'restart';
 
@@ -211,7 +218,8 @@ export class DelegationService {
       chat?.kind === 'group' ? chat.members : undefined
     );
     if (error) return { ok: false, error };
-    let taskId: string | undefined;
+    let task: { taskId: string; seq: number } | undefined;
+    let opened = false;
     let check = input.check;
     if (input.taskId !== undefined) {
       const gate = this.deps.tasks?.gate(chatId, input.taskId, parent.id) ?? {
@@ -219,9 +227,19 @@ export class DelegationService {
         error: 'Tasks are only available in group chats.',
       };
       if (!gate.ok) return gate;
-      taskId = gate.taskId;
+      task = gate;
       check ??= gate.check;
+    } else if (
+      chatId &&
+      chat?.kind === 'group' &&
+      depth === 1 &&
+      !options.retryOf &&
+      !options.resume
+    ) {
+      task = this.deps.tasks?.open(chatId, parent.id, input.task, check);
+      opened = task !== undefined;
     }
+    const taskId = task?.taskId;
     const id = randomUUID();
     const batchId = options.standalone ? undefined : this.deps.host.turnKey(parentConversationId);
     const projectId = conversation.projectId;
@@ -230,8 +248,10 @@ export class DelegationService {
       : this.newChild(projectId, target.id, id);
     const effective = delegatedBotPermissions(parent, target);
     const origin = { parentConversationId, chatId };
-    if (!child || !this.deps.host.registerDelegation(child.conversationId, effective, origin))
+    if (!child || !this.deps.host.registerDelegation(child.conversationId, effective, origin)) {
+      if (opened && chatId && taskId) this.deps.tasks?.discard(chatId, taskId);
       return { ok: false, error: 'Delegation workspace unavailable.' };
+    }
     const record: Delegation = {
       id,
       parentConversationId,
@@ -256,6 +276,7 @@ export class DelegationService {
       ...(input.keep ? { keep: true } : {}),
       ...(check ? { check: { kind: check.kind, text: check.text } } : {}),
       timeoutMinutes,
+      trigger: options.retryOf ? 'retry' : 'delegate',
     };
     this.save(record);
     const freshChild = () => {
@@ -288,6 +309,7 @@ export class DelegationService {
     return {
       ok: true,
       delegationId: id,
+      ...(task ? { taskId: `#${task.seq}` } : {}),
       ...(warnings.length ? { warning: warnings.join(' ') } : {}),
     };
   }
@@ -468,7 +490,7 @@ export class DelegationService {
   /** queued → running 的唯一入口：期限从真正开工起算 */
   private started(record: Delegation): void {
     if (record.state !== 'queued' || this.disposed) return;
-    this.save({ ...record, state: 'running' });
+    this.save({ ...record, state: 'running', startedAt: Date.now() });
     const timer = setTimeout(
       () => {
         const current = this.deps.store.get(record.id);
@@ -664,7 +686,19 @@ export class DelegationService {
 
   private save(record: Delegation): void {
     this.deps.store.save(record);
-    this.deps.tasks?.sync(record);
+    const nestedIn = record.taskId ? undefined : this.nestedIn(record);
+    if (nestedIn) this.deps.tasks?.sync(record, nestedIn);
+    else this.deps.tasks?.sync(record);
     this.deps.emit({ kind: 'delegation', ...(record.chatId ? { chatId: record.chatId } : {}) });
+  }
+
+  /** 嵌套执行所属的上层任务：发起它的那次执行（父会话上最近一条记录）挂的任务 */
+  private nestedIn(record: Delegation): string | undefined {
+    if (record.depth < 2) return undefined;
+    return this.deps.store
+      .list()
+      .filter((item) => item.childConversationId === record.parentConversationId)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .at(-1)?.taskId;
   }
 }

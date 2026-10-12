@@ -18,6 +18,7 @@ let chatId: string;
 const emit = vi.fn();
 const send = vi.fn(async (_chatId: string, _text: string) => ({ ok: true as const }));
 const cancelDelegation = vi.fn();
+let legacy: Delegation[] = [];
 let outputs: Array<{
   role: string;
   toolCallId: string;
@@ -62,6 +63,7 @@ beforeEach(() => {
   send.mockClear();
   cancelDelegation.mockClear();
   outputs = [];
+  legacy = [];
   sessionMessages.mockClear();
   service = new GroupTaskService({
     store: new GroupTaskStore(join(root, 'chats')),
@@ -71,6 +73,7 @@ beforeEach(() => {
     send,
     cancelDelegation,
     sessionMessages,
+    delegations: () => legacy,
   });
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -283,6 +286,7 @@ describe('验收条件 check', () => {
     expect(service.gate(chatId, '#1', alice)).toEqual({
       ok: true,
       taskId: created.ok ? created.task.id : '',
+      seq: 1,
       check,
     });
   });
@@ -466,13 +470,13 @@ describe('委派闸门与同步', () => {
       ok: false,
       error: 'Task #9 not found in this group.',
     });
-    expect(service.gate(chatId, '#1', alice)).toEqual({ ok: true, taskId: task.id });
+    expect(service.gate(chatId, '#1', alice)).toEqual({ ok: true, taskId: task.id, seq: 1 });
     service.claim(chatId, bob, '#1');
     expect(service.gate(chatId, '#1', alice)).toEqual({
       ok: false,
       error: 'Task #1 is already claimed by Bob.',
     });
-    expect(service.gate(chatId, '#1', bob)).toEqual({ ok: true, taskId: task.id });
+    expect(service.gate(chatId, '#1', bob)).toEqual({ ok: true, taskId: task.id, seq: 1 });
     const record = delegation({ chatId, parentBotId: bob, targetBotId: alice, taskId: task.id });
     service.sync(record);
     expect(store().find(chatId, '#1')).toMatchObject({
@@ -608,5 +612,212 @@ describe('待验收 review', () => {
       ok: true,
       tasks: [{ id: '#1', status: 'todo', returnReason: 'redo' }],
     });
+  });
+});
+
+describe('执行记录 runs / sessions', () => {
+  const check = { kind: 'output-contains' as const, text: 'XYZ_PASS' };
+  const runId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+  it('open 静默建卡：标题取首个非空行前 60 字，详情为全文，创建人为发起成员；discard 回滚', () => {
+    const text = `\n  ${'修'.repeat(70)}  \n第二行`;
+    const opened = service.open(chatId, alice, text, check);
+    expect(opened).toEqual({ taskId: expect.any(String), seq: 1 });
+    expect(store().find(chatId, '#1')).toMatchObject({
+      title: '修'.repeat(60),
+      detail: text.trim(),
+      createdBy: alice,
+      status: 'todo',
+      check,
+    });
+    expect(systemTexts()).toEqual([]);
+    service.discard(chatId, opened?.taskId ?? '');
+    expect(service.list(chatId)).toEqual([]);
+    expect(service.open('not-a-chat', alice, 'x')).toBeUndefined();
+  });
+
+  it('每次落盘同步 runs 与执行人子会话；只有关联变化写时间线，#21 规则不变', () => {
+    const task = added('Login page', alice);
+    const record = delegation({
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+      childConversationId: 'child-bob',
+      trigger: 'delegate',
+    });
+    service.sync(record);
+    service.sync({ ...record, state: 'running', startedAt: 5 });
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'doing',
+      runs: [
+        {
+          id: DELEGATION,
+          botId: bob,
+          trigger: 'delegate',
+          state: 'running',
+          createdAt: 1,
+          startedAt: 5,
+        },
+      ],
+      sessions: { [bob]: 'child-bob' },
+    });
+    service.sync({ ...record, state: 'completed', startedAt: 5, finishedAt: 9, result: 'ok' });
+    service.sync({
+      ...record,
+      state: 'completed',
+      startedAt: 5,
+      finishedAt: 9,
+      result: 'ok',
+      deliveredAt: 10,
+    });
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'review',
+      runs: [{ id: DELEGATION, state: 'completed', startedAt: 5, finishedAt: 9 }],
+    });
+    expect(systemTexts()).toEqual([
+      'Alice 新建了任务 #1 Login page',
+      'Alice 把 #1 Login page 委派给 Bob',
+      'Bob 交付了 #1 Login page，待Alice验收：ok',
+    ]);
+    // 执行人就是创建人：仍直接 done
+    const own = added('Own', bob);
+    const mine = delegation({
+      id: runId(2),
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: own.id,
+    });
+    service.sync(mine);
+    service.sync({ ...mine, state: 'completed', result: 'ok' });
+    expect(store().find(chatId, '#2')).toMatchObject({
+      status: 'done',
+      runs: [{ id: runId(2), trigger: 'delegate', state: 'completed' }],
+    });
+  });
+
+  it('runs 只留最近 30 次；缺省 trigger 按 delegate', () => {
+    const task = added();
+    for (let n = 1; n <= 32; n++) {
+      const record = delegation({
+        id: runId(n),
+        chatId,
+        parentBotId: alice,
+        targetBotId: bob,
+        taskId: task.id,
+        createdAt: n,
+      });
+      service.sync(record);
+      service.sync({ ...record, state: 'failed', failure: 'timeout', finishedAt: n });
+    }
+    const runs = store().find(chatId, '#1')?.runs ?? [];
+    expect(runs).toHaveLength(30);
+    // 摘要没变的落盘（如投递时间）不重写任务
+    const updatedAt = store().find(chatId, '#1')?.updatedAt;
+    vi.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER);
+    const last = delegation({
+      id: runId(32),
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+      createdAt: 32,
+    });
+    service.sync({ ...last, state: 'failed', failure: 'timeout', finishedAt: 32, deliveredAt: 99 });
+    expect(store().find(chatId, '#1')?.updatedAt).toBe(updatedAt);
+    vi.restoreAllMocks();
+    expect(runs[0]).toEqual({
+      id: runId(3),
+      botId: bob,
+      trigger: 'delegate',
+      state: 'failed',
+      failure: 'timeout',
+      createdAt: 3,
+      finishedAt: 3,
+    });
+  });
+
+  it('深度 2 的嵌套执行只记进上层任务的 runs：不改状态、不记会话、不写时间线', () => {
+    const task = added('Login page', alice);
+    const outer = delegation({
+      chatId,
+      parentBotId: alice,
+      targetBotId: bob,
+      taskId: task.id,
+      childConversationId: 'child-bob',
+    });
+    service.sync(outer);
+    const before = systemTexts();
+    const { taskId: _task, ...rest } = delegation({
+      id: runId(7),
+      chatId,
+      parentBotId: bob,
+      targetBotId: alice,
+      parentConversationId: 'child-bob',
+      childConversationId: 'child-alice',
+      depth: 2,
+      createdAt: 3,
+    });
+    service.sync(rest, task.id);
+    service.sync({ ...rest, state: 'completed', result: 'sub done' }, task.id);
+    expect(store().find(chatId, '#1')).toMatchObject({
+      status: 'doing',
+      delegationId: DELEGATION,
+      sessions: { [bob]: 'child-bob' },
+      runs: [
+        { id: DELEGATION, botId: bob, state: 'queued' },
+        { id: runId(7), botId: alice, state: 'completed', nested: true },
+      ],
+    });
+    expect(store().find(chatId, '#1')?.sessions).not.toHaveProperty(alice);
+    expect(systemTexts()).toEqual(before);
+  });
+
+  it('旧任务没有 runs：list 按 taskId 从委派记录只读派生，下次同步在派生结果上追加', () => {
+    const task = added();
+    const old = (n: number, over: Partial<Delegation>) =>
+      delegation({
+        id: runId(n),
+        chatId,
+        parentBotId: alice,
+        targetBotId: bob,
+        taskId: task.id,
+        ...over,
+      });
+    legacy = [
+      old(1, { state: 'completed', createdAt: 20, finishedAt: 25 }),
+      old(2, { taskId: runId(99), createdAt: 5 }),
+      old(3, { state: 'failed', failure: 'error', createdAt: 10, startedAt: 11, trigger: 'retry' }),
+    ];
+    expect(service.list(chatId)[0].runs).toEqual([
+      {
+        id: runId(3),
+        botId: bob,
+        trigger: 'retry',
+        state: 'failed',
+        failure: 'error',
+        createdAt: 10,
+        startedAt: 11,
+      },
+      {
+        id: runId(1),
+        botId: bob,
+        trigger: 'delegate',
+        state: 'completed',
+        createdAt: 20,
+        finishedAt: 25,
+      },
+    ]);
+    expect(store().find(chatId, '#1')).not.toHaveProperty('runs');
+    expect(service.list(chatId)).toHaveLength(1);
+    service.sync(old(4, { createdAt: 30 }));
+    expect(
+      store()
+        .find(chatId, '#1')
+        ?.runs?.map((run) => run.id)
+    ).toEqual([runId(3), runId(1), runId(4)]);
+    added('Empty');
+    expect(service.list(chatId)[1]).not.toHaveProperty('runs');
   });
 });
