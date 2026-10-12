@@ -273,6 +273,8 @@ interface GroupEntryBase {
 export interface HumanEntryRefs {
   chats?: BotId[];
   skill?: string;
+  /** 看板指派的任务 id：投给被 @ 的成员时附上该任务的历次执行 */
+  task?: string;
 }
 
 function parseHumanRefs(value: unknown): { refs?: HumanEntryRefs } {
@@ -281,8 +283,9 @@ function parseHumanRefs(value: unknown): { refs?: HumanEntryRefs } {
   const refs: HumanEntryRefs = {
     ...(chats.length ? { chats } : {}),
     ...(isText(value.skill) ? { skill: value.skill } : {}),
+    ...(isText(value.task) ? { task: value.task } : {}),
   };
-  return refs.chats || refs.skill ? { refs } : {};
+  return refs.chats || refs.skill || refs.task ? { refs } : {};
 }
 
 function parseHumanImages(value: unknown): { images?: string[] } {

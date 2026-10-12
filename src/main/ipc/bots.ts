@@ -512,6 +512,7 @@ export function getBotServices(): BotServices | null {
     sessionMessages: (conversationId) =>
       readBotSessionMessages(sessionDir(), authority.conversation(conversationId)?.sessionFile),
     workspacePath: (chatId) => host.workspacePath(chatId),
+    taskBrief: (chatId, taskId) => tasks.previousRuns(chatId, taskId),
   });
   const groups = new GroupChatService({
     bots,
@@ -595,8 +596,8 @@ export function getBotServices(): BotServices | null {
     chats,
     bots,
     emit: emitBotEvent,
-    send: (chatId, text) =>
-      groups.send(chatId, text, { deliveryId: randomUUID(), source: 'human' }),
+    send: (chatId, text, refs) =>
+      groups.send(chatId, text, { deliveryId: randomUUID(), source: 'human' }, refs),
     cancelDelegation: (id) => {
       delegationsRef?.cancel(id);
     },

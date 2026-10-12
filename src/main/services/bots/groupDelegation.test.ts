@@ -7,6 +7,7 @@ import { SourceAuthorityRegistry } from '../sourceAuthorityRegistry';
 import { BotSessionHost, type BotSpawnSpec } from './botSessionHost';
 import { BotStore } from './botStore';
 import { BotChatStore } from './chatStore';
+import { createComposerRefs } from './composerRefs';
 import { turnDelegationTargets } from './delegationBatch';
 import { DelegationService } from './delegationService';
 import { DelegationStore } from './delegationStore';
@@ -91,13 +92,29 @@ function fixture(
         emit: () => {},
         delegations: () => store.list(),
         rework: (input) => current?.rework(input) ?? { ok: false as const, error: 'disabled' },
+        send: (chatId, text, refs) =>
+          groups.send(
+            chatId,
+            text,
+            { deliveryId: `human-${Math.random()}`, source: 'human' },
+            refs
+          ),
       })
     : undefined;
-  const groups = new GroupChatService({
+  const composer = createComposerRefs({
+    bots,
+    chats,
+    skills: () => [],
+    sessionMessages: async () => [],
+    workspacePath: () => undefined,
+    taskBrief: (chatId, taskId) => tasks?.previousRuns(chatId, taskId) ?? '',
+  });
+  const groups: GroupChatService = new GroupChatService({
     bots,
     chats,
     host,
     emit: () => {},
+    refsAppendix: (chat, botId, entries) => composer.groupAppendix(chat, botId, entries),
     delegatedTargets: (conversationId, turnKey) =>
       turnDelegationTargets(store.list(), conversationId, turnKey),
   });
@@ -174,6 +191,7 @@ function fixture(
     prompts,
     host,
     groups,
+    composer,
     delegations,
     tasks,
     makeDelegations,
@@ -1212,5 +1230,36 @@ it('重启后恢复：未跑完的追加记 ok=false，batch / keep 已落盘，
   await settle();
   expect(resultsTo(f, boss)).toHaveLength(1);
   again.dispose();
+  f.groups.dispose();
+});
+
+it('人在看板上改派：新成员这一轮附 <previous-runs>，群里只显示指派那句，其他成员不带', async () => {
+  const f = fixture(['林经理', '阿后', '小三'], undefined, true);
+  const { boss, child } = await handOver(f);
+  f.observe(child, {
+    type: 'message-upsert',
+    index: 99,
+    message: { role: 'assistant', content: [{ type: 'text', text: '颜色改了一半' }] },
+  });
+  f.fail(child);
+  await settle();
+  expect(task1(f)).toMatchObject({ status: 'doing', assigneeBotId: f.hou });
+  expect(await f.tasks!.assign(f.chat.id, '#1', f.ids[2])).toMatchObject({ ok: true });
+  await settle();
+  const third = f.conversation(f.ids[2]);
+  const text = f.to(third).at(-1)!.text;
+  expect(text).toContain('请处理任务 #1');
+  expect(text).toContain('<previous-runs>');
+  expect(text).toContain('<request>修复登录页按钮</request>');
+  const human = f
+    .entries()
+    .filter((entry) => entry.kind === 'human')
+    .at(-1);
+  expect(human).toMatchObject({ text: '@小三 请处理任务 #1：修复登录页按钮' });
+  // 同一条消息投给别的成员（没被 @）不展开
+  const chat = f.chats.get(f.chat.id)!;
+  expect(await f.composer.groupAppendix(chat, f.lin, human ? [human] : [])).toBe('');
+  expect(f.to(boss).some((prompt) => prompt.text.includes('<previous-runs>'))).toBe(false);
+  f.delegations.dispose();
   f.groups.dispose();
 });

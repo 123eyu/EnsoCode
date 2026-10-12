@@ -349,6 +349,15 @@ describe('parseGroupEntry', () => {
       },
       { seq: 4, id: 'e4', at: 4, kind: 'system', text: 'limit reached' },
       { seq: 5, id: 'e5', at: 5, kind: 'system', text: '新对话', newConversation: true },
+      {
+        seq: 7,
+        id: 'e7',
+        at: 7,
+        kind: 'human',
+        text: '@A 请处理任务 #1：x',
+        mentions: [BOT_A],
+        refs: { task: 'task-1' },
+      },
     ];
     for (const entry of entries) expect(parseGroupEntry(entry)).toEqual(entry);
     expect(

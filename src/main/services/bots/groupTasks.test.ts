@@ -311,7 +311,9 @@ describe('人类指派与成员离开', () => {
       ok: true,
       task: { status: 'doing', assigneeBotId: bob },
     });
-    expect(send).toHaveBeenCalledWith(chatId, '@Bob 请处理任务 #1：Login page');
+    expect(send).toHaveBeenCalledWith(chatId, '@Bob 请处理任务 #1：Login page', {
+      task: expect.any(String),
+    });
     added('API');
     send.mockResolvedValueOnce({ ok: false, error: 'chat-stopping' } as never);
     expect(await service.assign(chatId, '#2', alice)).toEqual({
@@ -357,7 +359,9 @@ describe('群话题', () => {
     service.add(chatId, 'human', { title: 'API' });
     expect(texts(other.id)).toEqual(['用户 新建了任务 #2 API']);
     await service.assign(chatId, '#2', alice);
-    expect(send).toHaveBeenCalledWith(other.id, '@Alice 请处理任务 #2：API');
+    expect(send).toHaveBeenCalledWith(other.id, '@Alice 请处理任务 #2：API', {
+      task: expect.any(String),
+    });
 
     const gate = service.gate(thread.id, '#1', bob);
     expect(gate).toMatchObject({ ok: true });

@@ -10,6 +10,7 @@ import {
   GROUP_TASK_TITLE_MAX,
   type GroupTask,
   type GroupTaskRun,
+  type HumanEntryRefs,
   parseTaskCheck,
   stalledTaskRun,
   type TaskCheck,
@@ -19,6 +20,7 @@ import type { BotStore } from './botStore';
 import type { BotChatStore } from './chatStore';
 import { delegationResultBody, isActiveDelegation } from './delegationBatch';
 import type { GroupTaskStore } from './groupTaskStore';
+import { previousRunsText } from './previousRuns';
 
 /** 'human' = 人类（UI）；其余为成员 botId */
 export type TaskActor = string;
@@ -45,7 +47,7 @@ interface Deps {
   bots: BotStore;
   emit: (event: BotEvent) => void;
   /** 以人类身份在群里发消息（复用群路由） */
-  send?: (chatId: string, text: string) => Promise<BotSendResult>;
+  send?: (chatId: string, text: string, refs?: HumanEntryRefs) => Promise<BotSendResult>;
   cancelDelegation?: (id: string) => void;
   /** 成员在该群当前会话的消息（complete 验收读最终工具结果） */
   sessionMessages?: (chatId: string, botId: string) => Promise<readonly ProjectedMessage[]>;
@@ -492,7 +494,9 @@ export class GroupTaskService {
     const sent = this.deps.send
       ? await this.deps.send(
           this.timeline(chatId),
-          `@${bot.name} 请处理任务 #${task.seq}：${task.title}`
+          `@${bot.name} 请处理任务 #${task.seq}：${task.title}`,
+          // 改派：新成员这一轮附上之前的执行与退回理由（不进群时间线正文）
+          { task: task.id }
         )
       : { ok: false as const, error: 'group-not-ready' };
     if (sent.ok) return written;
@@ -528,6 +532,20 @@ export class GroupTaskService {
       this.now()
     );
     return task && { taskId: task.id, seq: task.seq };
+  }
+
+  /** 任务的历次执行（深度 1）与退回理由，拼成 <previous-runs>；没有就空串 */
+  previousRuns(chatId: string, taskId: string): string {
+    const task = this.group(chatId) && this.deps.store.find(this.board(chatId), taskId);
+    if (!task) return '';
+    const runs = (this.deps.delegations?.() ?? [])
+      .filter((record) => record.taskId === task.id && record.depth === 1)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    const text = previousRunsText(runs, {
+      name: (id) => this.name(id),
+      ...(task.returnReason ? { returnReason: task.returnReason } : {}),
+    });
+    return text && `Earlier runs of task #${task.seq}:\n${text}`;
   }
 
   /** 撤销 open 建的卡（委派最终被拒） */

@@ -528,7 +528,7 @@ const EntryRow = memo(function EntryRow({
             </div>
           )}
           {entry.images?.length ? <ArtifactCards target={{ chatId, entryId: entry.id }} /> : null}
-          {entry.refs && <HumanRefs refs={entry.refs} />}
+          {(entry.refs?.skill || entry.refs?.chats?.length) && <HumanRefs refs={entry.refs} />}
           {!continued && (
             <span className="mt-0.5 text-[11px] text-muted-foreground">{timeOf(entry.at)}</span>
           )}
