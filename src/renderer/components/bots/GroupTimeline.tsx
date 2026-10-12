@@ -34,7 +34,9 @@ import {
   anchorDelegations,
   buildRows,
   locateTurn,
+  type TimelineDelegation,
   type TurnStep,
+  timelineDelegations,
   turnSteps,
 } from '@/stores/bots/groupTimeline';
 import { useSettingsStore } from '@/stores/settings';
@@ -155,11 +157,21 @@ export function GroupTimeline({
         .sort((a, b) => a.createdAt - b.createdAt),
     [delegations]
   );
-  const placed = useMemo(() => anchorDelegations(entries, active), [entries, active]);
-  const card = (record: Delegation) => (
+  const placed = useMemo(
+    () => anchorDelegations(entries, timelineDelegations(active)),
+    [entries, active]
+  );
+  const tasks = useBotsStore((s) => s.tasks[chat.id]);
+  const merged = active.some((record) => record.appends?.length);
+  useEffect(() => {
+    if (merged && !tasks) void useBotsStore.getState().refreshTasks(chat.id);
+  }, [merged, tasks, chat.id]);
+  const card = ({ key, record, append }: TimelineDelegation) => (
     <DelegationCard
-      key={record.id}
+      key={key}
       record={record}
+      append={append}
+      taskSeq={append && tasks?.find((task) => task.id === record.taskId)?.seq}
       bots={bots}
       onOpenConversation={onOpenConversation}
     />

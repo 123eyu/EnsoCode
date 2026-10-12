@@ -1,4 +1,10 @@
-import type { BotProfile, Delegation, DelegationState, TaskCheck } from '@shared/types/bot';
+import type {
+  BotProfile,
+  Delegation,
+  DelegationAppend,
+  DelegationState,
+  TaskCheck,
+} from '@shared/types/bot';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { addToast } from '@/components/ui/toast';
@@ -116,6 +122,9 @@ interface DelegationCardProps {
   entry?: { from: string; to: string; state: DelegationState; summary?: string; at: number };
   /** 已被重试：不再给重试按钮 */
   retried?: boolean;
+  /** 并入 record 这次执行的追加：标「已并入」，不单独显示状态与结果 */
+  append?: DelegationAppend;
+  taskSeq?: number;
   bots: Map<string, BotProfile>;
   onOpenConversation: (conversationId: string, title: string) => void;
 }
@@ -125,22 +134,26 @@ export function DelegationCard({
   record,
   entry,
   retried,
+  append,
+  taskSeq,
   bots,
   onOpenConversation,
 }: DelegationCardProps) {
   const { t } = useI18n();
   const state = record?.state ?? entry?.state ?? 'queued';
-  const now = useNow(isActiveDelegation(state));
+  const now = useNow(!append && isActiveDelegation(state));
   const from = bots.get(record?.parentBotId ?? entry?.from ?? '');
   const to = bots.get(record?.targetBotId ?? entry?.to ?? '');
-  const actions = delegationActions(state);
+  const actions = delegationActions(append ? 'completed' : state);
   const presence = useDelegationPresence(record);
-  const active = presence && isActiveDelegation(state);
-  const summary = record
-    ? state === 'completed'
-      ? record.result
-      : failureText(record, t)
-    : entry?.summary;
+  const active = !append && presence && isActiveDelegation(state);
+  const summary = append
+    ? undefined
+    : record
+      ? state === 'completed'
+        ? record.result
+        : failureText(record, t)
+      : entry?.summary;
   const title = t('{{from}} → {{to}} · Delegation', {
     from: from?.name ?? t('Deleted member'),
     to: to?.name ?? t('Deleted member'),
@@ -154,17 +167,27 @@ export function DelegationCard({
         <BotAvatar bot={to} size="xs" presence={presence?.state} />
         <span className="text-foreground">{to?.name ?? t('Deleted member')}</span>
         <span>· {t('Delegation')}</span>
-        {active ? (
+        {append ? (
+          <span className="rounded bg-info/15 px-1.5 text-[11px] text-info">
+            {taskSeq === undefined
+              ? t('Merged into the current run')
+              : t('Merged into the current run of #{{n}}', { n: taskSeq })}
+          </span>
+        ) : active ? (
           <PresenceChip info={presence} />
         ) : (
           <DelegationBadge state={state} interrupted={record?.failure === 'interrupted'} />
         )}
-        {record && <span>{formatElapsed((record.finishedAt ?? now) - record.createdAt)}</span>}
+        {record && !append && (
+          <span>{formatElapsed((record.finishedAt ?? now) - record.createdAt)}</span>
+        )}
         <span className="flex-1" />
-        <span>{timeOf(entry?.at ?? record?.createdAt ?? now)}</span>
+        <span>{timeOf(append?.at ?? entry?.at ?? record?.createdAt ?? now)}</span>
       </div>
-      {record?.task && <div className="mt-1.5 line-clamp-3 text-sm">{record.task}</div>}
-      {record?.check && <CheckBadge check={record.check} className="mt-1.5" />}
+      {(append?.text ?? record?.task) && (
+        <div className="mt-1.5 line-clamp-3 text-sm">{append?.text ?? record?.task}</div>
+      )}
+      {record?.check && !append && <CheckBadge check={record.check} className="mt-1.5" />}
       {summary && (
         <div className="mt-1.5 line-clamp-4 whitespace-pre-wrap text-muted-foreground text-xs">
           {summary}

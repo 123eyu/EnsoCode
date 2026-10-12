@@ -3,7 +3,7 @@ import type { BotProfile, Delegation, GroupTaskRun } from '@shared/types/bot';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TaskRuns } from './TaskRuns';
+import { TaskRunAppends, TaskRuns } from './TaskRuns';
 
 const store = vi.hoisted(() => ({
   delegations: [] as Delegation[],
@@ -109,5 +109,51 @@ describe('TaskRuns', () => {
     expect(html).toContain('历次执行 · 6');
     expect(html).toContain('显示全部（6）');
     expect(html.match(/派活/g)).toHaveLength(5);
+  });
+
+  it('有追加的执行行显示「+N 追加」，可展开', () => {
+    store.delegations = [record('done')];
+    const html = renderToStaticMarkup(
+      createElement(TaskRuns, {
+        runs: [
+          run('done', { state: 'running', startedAt: NOW - MIN, appends: 2 }),
+          run('plain', {}),
+        ],
+        bots,
+        onOpenConversation: () => {},
+      })
+    );
+    expect(html.match(/\+2 追加/g)).toHaveLength(1);
+    expect(html).toContain('aria-expanded="false"');
+    store.locale = 'en';
+    expect(
+      renderToStaticMarkup(
+        createElement(TaskRuns, {
+          runs: [run('done', { appends: 1 })],
+          bots,
+          onOpenConversation: () => {},
+        })
+      )
+    ).toContain('+1 appended');
+  });
+
+  it('展开后列出每条追加的时间、摘要与是否送达', () => {
+    const at = new Date(2026, 9, 13, 9, 5).getTime();
+    const appends = [
+      { at, text: '顺便加个重连按钮\n细节', deliveryId: 'x1', ok: true },
+      { at, text: '文案改成网络已断开', deliveryId: 'x2', ok: false },
+      { at, text: '再补一条单测', deliveryId: 'x3' },
+    ];
+    const html = text(renderToStaticMarkup(createElement(TaskRunAppends, { appends })));
+    expect(html).toContain('顺便加个重连按钮');
+    expect(html).toContain('已送达');
+    expect(html).toContain('未送达');
+    expect(html).toContain('处理中');
+    expect(html).toContain(
+      new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    );
+    store.locale = 'en';
+    const en = text(renderToStaticMarkup(createElement(TaskRunAppends, { appends })));
+    for (const label of ['Delivered', 'Not delivered', 'Processing']) expect(en).toContain(label);
   });
 });
