@@ -85,8 +85,10 @@ export type TimelineItem =
       sandbox?: SandboxView | null;
       /** RTK 对本次工具调用的真实处理结果；无元数据时缺省 */
       rtk?: RtkToolStats;
-      /** 运行中的 bash/powershell 调用 id（转后台用）；其它缺省 */
+      /** 运行中的 bash/powershell 调用 id（转后台用），或阻塞等待的调用 id（不等了）；其它缺省 */
       callId?: string;
+      /** 运行中的阻塞等待（子代理 wait / wait:true、task_output 带时限）：可「不等了」；其它缺省 */
+      waiting?: 'subagent' | 'task';
       /** 前台命令被移交为后台任务时的任务 id；其它缺省 */
       backgroundTaskId?: string;
       /** submit_plan 提交的计划；其它工具缺省 */
@@ -512,6 +514,20 @@ function recordSubagent(
 
 export type SubagentOp = 'report' | 'wait' | 'stop' | 'dismiss' | 'list';
 const SUBAGENT_OPS = new Set<unknown>(['report', 'wait', 'stop', 'dismiss', 'list']);
+
+/** 会阻塞到对方结束的调用：子代理 wait、spawn / send 带 wait:true、task_output 带正时限 */
+function blockingWaitKind(name: string, args: unknown): 'subagent' | 'task' | null {
+  if (!args || typeof args !== 'object') return null;
+  const record = args as Record<string, unknown>;
+  if (name === 'task_output') {
+    return typeof record.timeout_ms === 'number' && record.timeout_ms > 0 ? 'task' : null;
+  }
+  if (name !== 'subagent') return null;
+  return record.operation === 'wait' ||
+    ((record.operation === 'spawn' || record.operation === 'send') && record.wait === true)
+    ? 'subagent'
+    : null;
+}
 
 /**
  * 子代理行头：spawn 起了名字时带上名字（后续行的标题就是它）；
@@ -1087,11 +1103,9 @@ function buildMessageTimeline(
               : result?.fileChanges?.length
                 ? result.fileChanges.map((change) => change.path)
                 : patchPathsFromArgs(part.arguments);
-          const liveCommand =
-            !result &&
-            running &&
-            messageIndex === lastTurnIndex &&
-            (part.name === 'bash' || part.name === 'powershell');
+          const live = !result && running && messageIndex === lastTurnIndex;
+          const liveCommand = live && (part.name === 'bash' || part.name === 'powershell');
+          const waiting = live ? blockingWaitKind(part.name, part.arguments) : null;
           items.push({
             kind: 'tool',
             key,
@@ -1134,7 +1148,8 @@ function buildMessageTimeline(
             durationMs: result?.durationMs ?? null,
             agentMeta: result?.agentMeta ?? null,
             ...(result?.rtk ? { rtk: result.rtk } : {}),
-            ...(liveCommand ? { callId: part.id } : {}),
+            ...(liveCommand || waiting ? { callId: part.id } : {}),
+            ...(waiting ? { waiting } : {}),
             ...(result?.backgroundTaskId ? { backgroundTaskId: result.backgroundTaskId } : {}),
             ...(part.name === 'submit_plan'
               ? { plan: extractSubmittedPlan(part.name, part.arguments) }

@@ -877,6 +877,30 @@ describe('buildTimeline', () => {
     expect(moved[1]).not.toHaveProperty('callId');
   });
 
+  it('运行中的阻塞等待带调用 id 与等待类型，供「不等了」', () => {
+    const call = (id: string, name: string, args: Record<string, unknown>): TimelineMessage => ({
+      role: 'assistant',
+      content: [{ type: 'toolCall', id, name, arguments: args }],
+    });
+    const row = (name: string, args: Record<string, unknown>) =>
+      buildTimeline([user('等'), call('w1', name, args)], true)[1];
+    expect(row('subagent', { operation: 'wait', runId: 'r' })).toMatchObject({
+      callId: 'w1',
+      waiting: 'subagent',
+    });
+    expect(
+      row('subagent', { operation: 'spawn', description: 'd', prompt: 'p', wait: true })
+    ).toMatchObject({ callId: 'w1', waiting: 'subagent' });
+    expect(row('task_output', { taskId: 't', timeout_ms: 1000 })).toMatchObject({
+      callId: 'w1',
+      waiting: 'task',
+    });
+    expect(
+      row('subagent', { operation: 'spawn', description: 'd', prompt: 'p' })
+    ).not.toHaveProperty('waiting');
+    expect(row('task_output', { taskId: 't' })).not.toHaveProperty('callId');
+  });
+
   it('exec 摘要用首行 JS，source 保留全文，结果 JSON 解析为 value/calls', () => {
     const code = 'const pkg = await read({ path: "package.json" });\nreturn pkg;';
     const output = JSON.stringify({

@@ -1559,6 +1559,12 @@ export const zhTranslations: Record<string, string> = {
   'Move to background': '转为后台',
   'Moving to background…': '正在转后台…',
   'Moved to background': '已转后台',
+  'Stop waiting': '不等了',
+  'Stopping wait…': '正在结束等待…',
+  'Writing reply…': '正在写回复…',
+  'No running subagents': '没有在跑的子代理',
+  'Stopping the wait does not stop subagents; the assistant is notified when they finish.':
+    '不等了也不会停下子代理，它们做完会自动通知助手。',
   'Stop subagent': '停止子代理',
   'Dismiss coworker': '解雇 coworker',
   'Hire coworker': '雇佣 coworker',
