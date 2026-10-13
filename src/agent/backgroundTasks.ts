@@ -427,7 +427,7 @@ export class BackgroundTaskManager {
 const TRAILING_AMP = /(?:^|[^&])&\s*$/;
 
 /** 前台 bash 默认超时（秒）。background=true 不限。 */
-export const DEFAULT_FOREGROUND_BASH_TIMEOUT_SEC = 10 * 60;
+export const DEFAULT_FOREGROUND_BASH_TIMEOUT_SEC = 120;
 
 function spawnBackground(
   command: string,

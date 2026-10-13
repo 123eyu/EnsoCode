@@ -48,6 +48,7 @@ const until = (pred: () => boolean, ms = 5000) =>
 
 describe('withForegroundBashTimeout', () => {
   it('前台未指定 timeout 时填默认秒数', () => {
+    expect(DEFAULT_FOREGROUND_BASH_TIMEOUT_SEC).toBe(120);
     expect(withForegroundBashTimeout({ command: 'sleep 1' })).toEqual({
       command: 'sleep 1',
       timeout: DEFAULT_FOREGROUND_BASH_TIMEOUT_SEC,
