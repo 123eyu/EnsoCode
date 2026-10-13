@@ -38,6 +38,39 @@ export function withVersionSegment(base: string, segment: string): string {
   return trimmed.endsWith(`/${segment}`) ? trimmed : `${trimmed}/${segment}`;
 }
 
+const DEEPSEEK_HOST = 'api.deepseek.com';
+const DEEPSEEK_OPENAI_BASE = 'https://api.deepseek.com';
+const DEEPSEEK_ANTHROPIC_BASE = 'https://api.deepseek.com/anthropic';
+
+function deepSeekPathSegments(baseUrl: string): string[] | null {
+  try {
+    const parsed = new URL(baseUrl.trim());
+    if (parsed.hostname.toLowerCase() !== DEEPSEEK_HOST) return null;
+    return parsed.pathname.split('/').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * DeepSeek 官方 OpenAI / Anthropic 入口不同。表单切换 API 类型时只改官方默认地址，
+ * 自定义中转不动。
+ */
+export function baseUrlAfterApiChange(nextApi: ModelApiKind, baseUrl: string): string {
+  const segments = deepSeekPathSegments(baseUrl);
+  if (!segments) return baseUrl;
+  const isOpenAiPath = segments.length === 0 || (segments.length === 1 && segments[0] === 'v1');
+  const isAnthropicPath = segments[0] === 'anthropic';
+  if (nextApi === 'anthropic-messages' && isOpenAiPath) return DEEPSEEK_ANTHROPIC_BASE;
+  if (
+    (nextApi === 'openai-completions' || nextApi === 'openai-responses') &&
+    isAnthropicPath
+  ) {
+    return DEEPSEEK_OPENAI_BASE;
+  }
+  return baseUrl;
+}
+
 /** 交给 pi registerProvider 的地址。Google 必须带 /v1beta，否则聊天 404、拉模型却成功。 */
 export function resolvePiProviderBaseUrl(api: ModelApiKind, baseUrl: string): string {
   const base = baseUrl.trim().replace(/\/+$/, '') || DEFAULT_BASE_URLS[api];
