@@ -685,10 +685,11 @@ export class GroupChatService {
     const markSmart = smart.length > 1 || (smart.length === 1 && smart[0] !== chat.bossBotId);
     for (const botId of targets) {
       const deliveryId = randomUUID();
+      const separate = decision?.separate === true && smart.includes(botId);
       const sent = await this.deliver(
         chat,
         botId,
-        { ...options, deliveryId },
+        { ...options, deliveryId, ...(separate ? { queueIfBusy: true } : {}) },
         decision?.intent === 'build' && decision.ids.length === 1 && decision.ids[0] === botId
           ? SMART_ROUTE_BUILD_NOTE
           : undefined
@@ -709,7 +710,15 @@ export class GroupChatService {
               }
             : {}),
         });
-        if (sent.queued) this.system(chat.id, `${name} 正在排队，等待可用会话`);
+        if (sent.steerPending)
+          this.system(chat.id, `${name} 正在忙，这条补充会在当前步骤结束后插入`);
+        else if (sent.queued)
+          this.system(
+            chat.id,
+            separate
+              ? `${name} 正在忙，这条新任务排在当前任务之后`
+              : `${name} 正在排队，等待可用会话`
+          );
       } else {
         this.system(
           chat.id,

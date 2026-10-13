@@ -161,6 +161,8 @@ export type BotDeliverResult =
       queued?: boolean;
       /** 已按 steer 下发，不另建宿主轮次；不是 worker 已消费的回执。 */
       steered?: true;
+      /** 与 queued 同时出现：已作为插话交给会话，等当前步骤结束后插入，不是排到下一轮 */
+      steerPending?: true;
       turnId?: string;
       /** 同一 deliveryId 已被该会话处理过，本次没有发出 */
       duplicate?: true;
@@ -1407,7 +1409,7 @@ export class BotSessionHost {
           conversationId: delivery.conversationId,
           ...(this.hasStartedDelivery(delivery.conversationId, delivery.deliveryId)
             ? { steered: true as const }
-            : { queued: true }),
+            : { queued: true, steerPending: true as const }),
         }
       : { ok: false, error: sent.error ?? 'steer-failed' };
   }

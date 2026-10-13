@@ -201,6 +201,39 @@ it('completion immediately after steer does not create another turn or leave a p
   expect(settled).toHaveBeenCalledTimes(1);
 });
 
+const notices = () =>
+  chats
+    .readEntries(chatId)
+    .filter((entry) => entry.kind === 'system')
+    .map((entry) => entry.text);
+
+it('a separate task routed to a busy member waits for its own turn instead of steering', async () => {
+  await group.send(chatId, '@Alice pull the reference projects');
+  select.mockResolvedValueOnce({ ids: [a], intent: 'build', separate: true });
+  await group.send(chatId, 'check open issues');
+  await vi.waitFor(() => expect(notices()).toContain('Alice 正在忙，这条新任务排在当前任务之后'));
+  expect(runtime.steer).not.toHaveBeenCalled();
+  expect(runtime.prompt).toHaveBeenCalledTimes(1);
+  done(a, 'pulled');
+  await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
+  expect(runtime.prompt.mock.calls[1][1]).toContain('check open issues');
+  done(a, 'issues');
+  await group.settled(chatId);
+  expect(replies().map((entry) => entry.text)).toEqual(['pulled', 'issues']);
+});
+
+it('a steer waiting for the current step says it will be inserted, not queued', async () => {
+  await group.send(chatId, '@Alice start');
+  runtime.steer.mockImplementationOnce(() => ({ ok: true }));
+  select.mockResolvedValueOnce({ ids: [a] });
+  await group.send(chatId, 'also the changelog');
+  await vi.waitFor(() => expect(runtime.steer).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() =>
+    expect(notices()).toContain('Alice 正在忙，这条补充会在当前步骤结束后插入')
+  );
+  expect(notices().some((text) => text.includes('正在排队'))).toBe(false);
+});
+
 it('steers a lone parallel member after the primary has finished', async () => {
   await group.send(chatId, '@Alice start');
   await group.send(chatId, '@Bob parallel');

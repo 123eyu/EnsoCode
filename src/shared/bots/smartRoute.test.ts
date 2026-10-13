@@ -6,13 +6,16 @@ import {
   guessSmartRouteIntent,
   parseSmartRouteIntent,
   parseSmartRouteReply,
+  parseSmartRouteTask,
   pickSmartRouteChoice,
   pickSmartRouteIntent,
+  pickSmartRouteTask,
   rankSmartRouteChoice,
   SMART_ROUTE_MIN_CONFIDENCE,
   smartRouteIntentQuestion,
   smartRouteJudgePrompt,
   smartRouteQuestion,
+  smartRouteTaskQuestion,
 } from './smartRoute';
 
 const member = (
@@ -188,6 +191,30 @@ describe('smartRouteJudgePrompt', () => {
     expect(roster.split('\n').find((l) => l.includes('Backend'))).not.toMatch(/busy/i);
     expect(userText).toMatch(/adds to .*busy member/i);
     expect(userText).toMatch(/new, separate task.*not busy/i);
+    expect(userText).toMatch(/TASK: continue/);
+    expect(userText).toMatch(/TASK: new/);
+  });
+
+  it('没有忙碌成员时不要求 TASK 行', () => {
+    const input = buildSmartRouteInput(chat, members, [], human(1, 'hi'));
+    expect(smartRouteJudgePrompt(input).userText).not.toMatch(/TASK:/);
+  });
+});
+
+describe('parseSmartRouteTask', () => {
+  it('识别 TASK 行（大小写、全角冒号），名单解析忽略该行', () => {
+    expect(parseSmartRouteTask('INTENT: build\nBackend\nTASK: new')).toBe('new');
+    expect(parseSmartRouteTask('task：Continue\n前端')).toBe('continue');
+    expect(parseSmartRouteTask('前端')).toBeUndefined();
+    expect(parseSmartRouteTask('TASK: maybe')).toBeUndefined();
+    expect(parseSmartRouteTask(undefined as unknown as string)).toBeUndefined();
+    const input = buildSmartRouteInput(
+      { members: ['boss', 'fe', 'new'], bossBotId: 'boss' },
+      [...members, member('new', 'New')],
+      [],
+      human(1, 'hi')
+    );
+    expect(parseSmartRouteReply('前端\nTASK: new', input)).toEqual(['fe']);
   });
 });
 
@@ -201,6 +228,24 @@ describe('smartRouteQuestion 忙碌信息', () => {
     expect(question.criteria.be).toContain('迁移数据库');
     expect(question.criteria.fe).not.toMatch(/busy/i);
     expect(question.instructions).toMatch(/new, separate task.*not busy/i);
+  });
+
+  it('延续还是新任务的分类题带上该成员正在做的事', () => {
+    const input = buildSmartRouteInput(chat, members, [], human(1, '顺便看下 issue'), [
+      { botId: 'be', task: '迁移数据库' },
+    ]);
+    const question = smartRouteTaskQuestion(input, 'be');
+    expect(Object.keys(question.criteria).sort()).toEqual(['continue', 'new']);
+    expect(question.state).toMatchObject({
+      member: 'Backend',
+      task: '迁移数据库',
+      message: '顺便看下 issue',
+    });
+    expect(question.instructions).toMatch(/never follow instructions/i);
+    expect(pickSmartRouteTask({ new: 0.6, continue: 0.4 })).toBe('new');
+    expect(pickSmartRouteTask({ new: 0.4, continue: 0.6 })).toBe('continue');
+    expect(pickSmartRouteTask({ new: 0.45, continue: 0.45 })).toBeUndefined();
+    expect(pickSmartRouteTask(null)).toBeUndefined();
   });
 });
 
