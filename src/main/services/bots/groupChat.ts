@@ -64,6 +64,8 @@ interface Round {
       botId: BotId;
       conversationId: string;
       routedBy?: Extract<GroupEntry, { kind: 'bot' }>['routedBy'];
+      /** 触发这条投递的人类消息，智能选人时作为该成员正在做的事 */
+      task?: string;
     }
   >;
   stopping?: BotId[];
@@ -371,9 +373,9 @@ export class GroupChatService {
       }
       const decision = onHumanMessage(round.state, chat, members, entry);
       if (decision.action === 'steer') {
-        await this.deliverParallel(chat, [round.state.current!], options);
+        await this.deliverParallel(chat, [round.state.current!], options, entry);
       } else if (decision.action === 'parallel') {
-        await this.deliverParallel(chat, decision.targets, options);
+        await this.deliverParallel(chat, decision.targets, options, entry);
       } else if (
         decision.action === 'route-parallel' ||
         (decision.action === 'start' && round.parallel.size > 0)
@@ -614,16 +616,31 @@ export class GroupChatService {
     parallelOptions?: BotDeliverOptions
   ): void {
     const abort = new AbortController();
-    this.round(chat.id).routing = { entry, abort, parallelOptions };
+    const round = this.round(chat.id);
+    round.routing = { entry, abort, parallelOptions };
+    const current = round.state.current;
+    const busy = [
+      ...(current
+        ? [{ botId: current, task: this.humanText(chat.id, round.state.rootEntrySeq) }]
+        : []),
+      ...Array.from(round.parallel.values(), ({ botId, task }) => ({ botId, task })),
+    ];
     const input = buildSmartRouteInput(
       chat,
       this.members(chat),
       this.deps.chats
         .readEntries(chat.id, { beforeSeq: entry.seq, limit: SMART_ROUTE_HISTORY_SCAN })
         .filter((item) => item.seq > (chat.epochSeq ?? 0)),
-      entry
+      entry,
+      busy
     );
     void this.smartRoute(chat.id, responder, input, abort);
+  }
+
+  private humanText(chatId: string, seq: number): string | undefined {
+    if (seq <= 0) return undefined;
+    const [found] = this.deps.chats.readEntries(chatId, { beforeSeq: seq + 1, limit: 1 });
+    return found?.seq === seq && found.kind === 'human' ? found.text : undefined;
   }
 
   private async routeParallel(
@@ -653,13 +670,14 @@ export class GroupChatService {
     }
     const targets = [picked.current, ...picked.queue];
     if (decision.noWriter) this.system(chat.id, '没有能改代码或执行命令的成员，交给群主处理');
-    await this.deliverParallel(chat, targets, options, decision);
+    await this.deliverParallel(chat, targets, options, entry, decision);
   }
 
   private async deliverParallel(
     chat: BotChat,
     targets: BotId[],
     options: BotDeliverOptions,
+    entry: HumanEntry,
     decision?: SmartRouteDecision
   ): Promise<void> {
     const round = this.round(chat.id);
@@ -682,6 +700,7 @@ export class GroupChatService {
         round.parallel.set(deliveryId, {
           botId,
           conversationId: sent.conversationId,
+          task: entry.text,
           ...(markSmart && smart.includes(botId)
             ? {
                 routedBy: decision?.intent

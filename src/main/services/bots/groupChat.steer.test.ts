@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { SmartRouteDecision } from '../../../shared/bots/smartRoute';
+import type { SmartRouteDecision, SmartRouteInput } from '../../../shared/bots/smartRoute';
 import type { AgentWorkerEvent, AttachedImage } from '../../../shared/types/agent';
 import { SourceAuthorityRegistry } from '../sourceAuthorityRegistry';
 import { BotSessionHost } from './botSessionHost';
@@ -153,6 +153,38 @@ it.each([true, false])(
     expect(settled).toHaveBeenCalledTimes(1);
   }
 );
+
+it('smart routing sees busy members with the message each is working on', async () => {
+  const busyOf = (call: number) => {
+    const [input] = select.mock.calls[call] as unknown as [SmartRouteInput];
+    return Object.fromEntries(input.candidates.map((cand) => [cand.id, cand.busy?.task]));
+  };
+  await group.send(chatId, '@Alice pull the reference projects');
+  select.mockResolvedValueOnce({ ids: [b] });
+  await group.send(chatId, 'check open issues');
+  await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
+  expect(busyOf(0)).toEqual({
+    [a]: '@Alice pull the reference projects',
+    [b]: undefined,
+    [c]: undefined,
+  });
+  select.mockResolvedValueOnce({ ids: [c] });
+  await group.send(chatId, 'and review the PRs');
+  await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(3));
+  expect(busyOf(1)).toEqual({
+    [a]: '@Alice pull the reference projects',
+    [b]: 'check open issues',
+    [c]: undefined,
+  });
+  done(a, 'pulled');
+  done(b, 'issues');
+  done(c, 'prs');
+  await group.settled(chatId);
+  select.mockResolvedValueOnce({ ids: [a] });
+  await group.send(chatId, 'next');
+  await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(3));
+  expect(busyOf(2)).toEqual({ [a]: undefined, [b]: undefined, [c]: undefined });
+});
 
 it('completion immediately after steer does not create another turn or leave a pending reply', async () => {
   await group.send(chatId, '@Alice start');

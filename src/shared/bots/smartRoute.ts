@@ -38,6 +38,14 @@ export interface SmartRouteCandidate {
   /** 能写文件、跑命令 */
   canAct: boolean;
   owner: boolean;
+  /** 本群里正在回复；task 是触发其当前工作的消息（截断，可能为空） */
+  busy?: { task: string };
+}
+
+/** 本群正在回复的成员及触发其工作的消息；同一成员多条时以最后一条为准 */
+export interface SmartRouteBusy {
+  botId: BotId;
+  task?: string;
 }
 
 export interface SmartRouteInput {
@@ -73,6 +81,7 @@ export const SMART_ROUTE_INTENT_MIN_CONFIDENCE = 0.5;
 const HISTORY_TEXT_MAX = 300;
 const MESSAGE_MAX = 2000;
 const SCOPE_MAX = 200;
+const BUSY_TASK_MAX = 120;
 
 const clip = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max)}…` : text;
@@ -81,13 +90,15 @@ export function buildSmartRouteInput(
   chat: Pick<BotChat, 'members' | 'bossBotId'> & { routing?: Pick<BotChatRouting, 'muted'> },
   members: readonly SmartRouteMember[],
   history: readonly GroupEntry[],
-  message: HumanEntry
+  message: HumanEntry,
+  busy: readonly SmartRouteBusy[] = []
 ): SmartRouteInput {
   const find = (id: BotId) => members.find((m) => m?.id === id);
   const muted = Array.isArray(chat.routing?.muted) ? chat.routing.muted : [];
   const candidates = chat.members.flatMap((id): SmartRouteCandidate[] => {
     const m = find(id);
     if (!m || m.archivedAt !== undefined || muted.includes(id)) return [];
+    const work = busy.findLast((item) => item.botId === id);
     return [
       {
         id,
@@ -96,6 +107,7 @@ export function buildSmartRouteInput(
         scope: clip(m.scope.trim(), SCOPE_MAX),
         canAct: m.tools === 'all',
         owner: id === chat.bossBotId,
+        ...(work ? { busy: { task: clip((work.task ?? '').trim(), BUSY_TASK_MAX) } } : {}),
       },
     ];
   });
@@ -118,7 +130,8 @@ export function buildSmartRouteInput(
 }
 
 const RULES = [
-  'If the human is clearly following up on or answering a specific member’s previous message, pick that member.',
+  'If the human is clearly following up on or answering a specific member’s previous message, or adds to the task a busy member is working on, pick that member.',
+  'Members marked busy are still working on the task shown and have not replied yet. For a new, separate task, prefer a member who is not busy and whose responsibility fits; pick a busy member only when nobody else fits.',
   'If the message asks for hands-on work (writing code, editing files, running commands), pick exactly one member who can do that work, preferring the one whose responsibility fits.',
   'If it is a question within one member’s area of responsibility, pick that member.',
   'For discussion, vague requests or small talk, pick the group owner.',
@@ -135,8 +148,10 @@ function describe(c: SmartRouteCandidate): string {
   const tags = [
     ...(c.owner ? ['group owner'] : []),
     c.canAct ? 'can edit files and run commands' : 'read-only',
+    ...(c.busy ? ['busy'] : []),
   ];
-  return `${c.name}${c.title ? ` (${c.title})` : ''} [${tags.join(', ')}]: ${c.scope || '-'}`;
+  const work = c.busy?.task ? ` (busy with: "${c.busy.task}")` : '';
+  return `${c.name}${c.title ? ` (${c.title})` : ''} [${tags.join(', ')}]: ${c.scope || '-'}${work}`;
 }
 
 const escapeTags = (text: string): string => text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
