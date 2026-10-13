@@ -426,7 +426,7 @@ function InlineMentionText({
             // biome-ignore lint/suspicious/noArrayIndexKey: 同一文件可重复提及，分段随文本快照整体替换
             key={index}
             kind="file"
-            label={segment.path.split('/').at(-1) || segment.path}
+            label={segment.path.split(/[\\/]/).at(-1) || segment.path}
             title={segment.path}
           />
         ) : segment.type === 'chat' ? (

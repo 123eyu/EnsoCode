@@ -1,5 +1,6 @@
 import { retryableGroupFailures } from '@shared/bots/groupRetry';
 import { splitTaskRef } from '@shared/bots/progress';
+import { PASTED_TEXT_FILE_NAME, splitPastedTextRefs } from '@shared/pastedText';
 import type { ProjectedMessage } from '@shared/types/agent';
 import type { BotChat, BotProfile, BotRoutedBy, Delegation, GroupEntry } from '@shared/types/bot';
 import {
@@ -10,6 +11,7 @@ import {
   CircleCheck,
   CirclePlay,
   CircleX,
+  FileText,
   Loader2,
   MessagesSquare,
   Sparkles,
@@ -25,6 +27,7 @@ import {
   useState,
 } from 'react';
 import { Markdown } from '@/components/chat/Markdown';
+import { mentionChipClass } from '@/components/chat/MentionChip';
 import { CHAT_COL } from '@/components/chat/MessageTimeline';
 import { USER_BUBBLE } from '@/components/chat/TimelineRow';
 import { Button } from '@/components/ui/button';
@@ -686,20 +689,40 @@ function ProgressRow({
 function MentionText({ text, bots }: { text: string; bots: Map<string, BotProfile> }) {
   const parts = useMemo(() => {
     const names = [...bots.values()].map((bot) => bot.name).sort((a, b) => b.length - a.length);
-    if (names.length === 0) return [text];
     const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
-    return text.split(new RegExp(`(@(?:${escaped.join('|')}|所有人|everyone|all))`, 'giu'));
+    const pattern = names.length
+      ? new RegExp(`(@(?:${escaped.join('|')}|所有人|everyone|all))`, 'giu')
+      : null;
+    // 超长粘贴附件路径可能含空格，先整体切出渲染成卡片
+    return splitPastedTextRefs(text).flatMap(
+      (segment): (string | { type: 'file'; path: string } | { type: 'mention'; part: string })[] =>
+        segment.type === 'file'
+          ? [segment]
+          : (pattern ? segment.text.split(pattern) : [segment.text]).map((part, index) =>
+              part.startsWith('@') && index % 2 === 1 ? { type: 'mention' as const, part } : part
+            )
+    );
   }, [text, bots]);
   return (
     <>
       {parts.map((part, index) =>
-        part.startsWith('@') && index % 2 === 1 ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 拆分片段按位置稳定
-          <span key={index} className="font-medium underline underline-offset-2">
-            {part}
+        typeof part === 'string' ? (
+          part
+        ) : part.type === 'file' ? (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: 拆分片段按位置稳定
+            key={index}
+            className={cn(mentionChipClass('file'), 'mx-0.5 leading-4')}
+            title={part.path}
+          >
+            <FileText className="h-3 w-3 shrink-0" />
+            <span className="truncate">{PASTED_TEXT_FILE_NAME}</span>
           </span>
         ) : (
-          part
+          // biome-ignore lint/suspicious/noArrayIndexKey: 拆分片段按位置稳定
+          <span key={index} className="font-medium underline underline-offset-2">
+            {part.part}
+          </span>
         )
       )}
     </>
