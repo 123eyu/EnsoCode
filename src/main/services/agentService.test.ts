@@ -660,6 +660,83 @@ describe('AgentService wait bounds and completion notify', () => {
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
+  it('请求预算停止带回部分输出并标明原因，只通知一次', async () => {
+    const notify = vi.fn();
+    const { service, children } = setup({ notify });
+    const spawned = await service.spawn(spawnRequest({ name: '排查' }));
+    if (!spawned.ok) throw new Error(spawned.error);
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 1,
+      index: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: '已经定位到两处可疑调用' }] },
+    });
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 2,
+      turnId: spawned.value.runId,
+      requestBudgetStop: true,
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][1]).toContain('因请求预算停止');
+    expect(notify.mock.calls[0][1]).toContain('已经定位到两处可疑调用');
+    expect(notify.mock.calls[0][2]).toBe(false);
+
+    const reported = await service.report({ context, requestId: 'r', runId: spawned.value.runId });
+    expect(reported).toMatchObject({
+      ok: true,
+      value: {
+        run: { status: 'succeeded', requestBudgetStop: true, text: '已经定位到两处可疑调用' },
+        text: '已经定位到两处可疑调用',
+      },
+    });
+    const waited = await service.wait({
+      context,
+      requestId: 'w',
+      runIds: [spawned.value.runId],
+    });
+    expect(waited).toMatchObject({
+      ok: true,
+      value: {
+        runs: [{ status: 'succeeded', requestBudgetStop: true, text: '已经定位到两处可疑调用' }],
+      },
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('请求预算停止后补报告出错：错误附在已有输出后交回，仍算成功', async () => {
+    const notify = vi.fn();
+    const { service, children } = setup({ notify });
+    const spawned = await service.spawn(spawnRequest({ name: '排查' }));
+    if (!spawned.ok) throw new Error(spawned.error);
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 1,
+      index: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: '已经定位到两处可疑调用' }] },
+    });
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 2,
+      turnId: spawned.value.runId,
+      requestBudgetStop: true,
+      requestBudgetError: '529 overloaded',
+    });
+    expect(notify.mock.calls[0][1]).toContain('补报告失败：529 overloaded');
+    const reported = await service.report({ context, requestId: 'r', runId: spawned.value.runId });
+    expect(reported).toMatchObject({
+      ok: true,
+      value: {
+        run: { status: 'succeeded', requestBudgetStop: true },
+        text: '已经定位到两处可疑调用\n\n补报告失败：529 overloaded',
+      },
+    });
+  });
+
   it('失败的 Run 通知为紧急；模型自己 stop 的不通知', async () => {
     const notify = vi.fn();
     const { service, children } = setup({ notify });

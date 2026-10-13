@@ -986,11 +986,17 @@ export function registerAgentHandlers(): void {
           ...(input.thinking ? { thinking: input.thinking } : {}),
         }),
       prompt: async (input) =>
-        promptChildSession(input.identity, input.runId, {
-          text: input.prompt,
-          images: [],
-          fileMentions: [],
-        }),
+        promptChildSession(
+          input.identity,
+          input.runId,
+          {
+            text: input.prompt,
+            images: [],
+            fileMentions: [],
+            // 只有 AgentService 的子代理 Run 计请求预算；派发服务的 Bot 成员不带这个标记
+          },
+          true
+        ),
       steer: async (input) => steerSession(input.identity, input.prompt),
       stop: async (input) => abortSession(input.identity),
       dismiss: async (input) => dismissChildSession(input.identity.parent, input.identity, false),

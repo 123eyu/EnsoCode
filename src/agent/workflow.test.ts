@@ -80,6 +80,18 @@ describe('workflowChildOutcome', () => {
         .failed
     ).toBe(true);
   });
+
+  it('请求预算停止仍带回部分输出并标明原因，不当成失败', () => {
+    expect(
+      workflowChildOutcome(
+        { report: { runs: [{ status: 'succeeded', requestBudgetStop: true }] } },
+        { text: '查到一半的结论' }
+      )
+    ).toEqual({
+      failed: false,
+      text: '因请求预算停止，以下是已有的部分输出。\n查到一半的结论',
+    });
+  });
 });
 
 describe('workflow tool', () => {

@@ -472,6 +472,10 @@ export interface AgentRunSnapshot {
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** 因请求预算强制停止：status 仍是 succeeded，但结果是被截断的部分输出 */
+  requestBudgetStop?: true;
+  /** 预算停止时已有的部分输出，让 wait 也能直接看到，不必再查 report */
+  text?: string;
 }
 
 export interface AgentSpawnReceipt {
@@ -1143,6 +1147,8 @@ export type AgentCommand =
       identity: ChildSessionIdentity;
       requestId: string;
       task: AgentDispatchTask;
+      /** 子代理 Run：按请求软预算计数。Bot 成员等派发不带此标记，不计数。 */
+      requestBudget?: true;
     }
   | {
       type: 'agent-control-result';
@@ -1637,6 +1643,10 @@ export type AgentWorkerEvent =
       turnId: string;
       /** worker 切出的本轮压缩摘要，供 renderer 决定是否滚动刷新标题；纯工具轮可缺省 */
       digest?: TurnDigest;
+      /** 子代理因请求预算被强制停止：已有部分输出随本次收口交回，不当作失败 */
+      requestBudgetStop?: true;
+      /** 预算停止后补报告那一轮出错：错误随结果交回，不丢已有输出 */
+      requestBudgetError?: string;
     }
   | {
       type: 'turn-failed';
@@ -3042,10 +3052,11 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
         ? (value as unknown as AgentCommand)
         : null;
     case 'prompt-child':
-      return hasExactKeys(value, ['type', 'identity', 'requestId', 'task']) &&
+      return hasOnlyKeys(value, ['type', 'identity', 'requestId', 'task', 'requestBudget']) &&
         parseChildSessionIdentity(value.identity) &&
         isNonEmptyString(value.requestId) &&
-        parseAgentDispatchTask(value.task)
+        parseAgentDispatchTask(value.task) &&
+        (value.requestBudget === undefined || value.requestBudget === true)
         ? (value as unknown as AgentCommand)
         : null;
     case 'agent-control-result':
@@ -3713,7 +3724,10 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
         : null;
     case 'turn-completed':
       return isNonEmptyString(value.turnId) &&
-        (value.digest === undefined || parseTurnDigest(value.digest))
+        (value.digest === undefined || parseTurnDigest(value.digest)) &&
+        (value.requestBudgetStop === undefined || value.requestBudgetStop === true) &&
+        (value.requestBudgetError === undefined ||
+          (value.requestBudgetStop === true && isNonEmptyString(value.requestBudgetError)))
         ? (value as unknown as AgentWorkerEvent)
         : null;
     case 'turn-failed':

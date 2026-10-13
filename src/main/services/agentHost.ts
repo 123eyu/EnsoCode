@@ -1020,9 +1020,16 @@ export function spawnChildSession(
 export function promptChildSession(
   identity: ChildSessionIdentity,
   requestId: string,
-  task: AgentDispatchTask
+  task: AgentDispatchTask,
+  requestBudget = false
 ): { ok: boolean; error?: string } {
-  return sendAgentCommand({ type: 'prompt-child', identity, requestId, task });
+  return sendAgentCommand({
+    type: 'prompt-child',
+    identity,
+    requestId,
+    task,
+    ...(requestBudget ? { requestBudget: true } : {}),
+  });
 }
 
 export function dismissChildSession(

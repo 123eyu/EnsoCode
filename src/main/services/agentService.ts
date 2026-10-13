@@ -119,6 +119,8 @@ interface RunRecord {
   activity?: AgentRunActivity;
   /** 结束态已经由工具返回值告诉模型（wait / report / 自己 stop 等），不再另发通知 */
   delivered: boolean;
+  /** 子代理因请求预算被强制停止：带着已有部分输出收口，不算失败 */
+  requestBudgetStop?: boolean;
 }
 
 interface Waiter {
@@ -625,6 +627,13 @@ export class AgentService implements AgentServiceContract {
       active &&
       event.turnId === active.runId
     ) {
+      if (event.type === 'turn-completed' && event.requestBudgetStop) {
+        active.requestBudgetStop = true;
+        if (event.requestBudgetError) {
+          const failure = `补报告失败：${event.requestBudgetError}`;
+          active.text = active.text ? `${active.text}\n\n${failure}` : failure;
+        }
+      }
       if (event.type === 'turn-failed') {
         this.settleRun(agent, active, 'failed', event.error);
       } else if (active.schema !== undefined || active.gate !== undefined) {
@@ -865,6 +874,7 @@ export class AgentService implements AgentServiceContract {
         : body;
     return [
       `Subagent "${title}" (agentId ${run.agentId}, runId ${run.runId}) ${run.status} after ${elapsed}.`,
+      ...(run.requestBudgetStop ? ['因请求预算停止，以下是已有的部分输出。'] : []),
       ...(excerpt ? [excerpt] : []),
       `Use subagent report with runId ${run.runId} for the full result.`,
     ].join('\n');
@@ -880,6 +890,8 @@ export class AgentService implements AgentServiceContract {
       createdAt: run.createdAt,
       ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
       ...(run.finishedAt !== undefined ? { finishedAt: run.finishedAt } : {}),
+      ...(run.requestBudgetStop ? { requestBudgetStop: true as const } : {}),
+      ...(run.requestBudgetStop && run.text !== undefined ? { text: run.text } : {}),
     };
   }
 

@@ -95,13 +95,16 @@ export function workflowChildOutcome(
     return { failed: true, text: null };
   const run = Array.isArray(receipt.runs) ? receipt.runs[0] : undefined;
   if (!isRecord(run) || run.status !== 'succeeded') return { failed: true, text: null };
+  const budgetStopped = run.requestBudgetStop === true;
+  const mark = (text: string): string =>
+    budgetStopped ? `因请求预算停止，以下是已有的部分输出。\n${text}` : text;
   if (!isRecord(reportValue)) return { failed: false, text: '' };
   if (reportValue.value !== undefined) {
-    return { failed: false, text: JSON.stringify(reportValue.value) };
+    return { failed: false, text: mark(JSON.stringify(reportValue.value)) };
   }
   return {
     failed: false,
-    text: typeof reportValue.text === 'string' ? reportValue.text : '',
+    text: mark(typeof reportValue.text === 'string' ? reportValue.text : ''),
   };
 }
 
