@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  baseUrlAfterApiChange,
   DEFAULT_BASE_URLS,
   mergeProviderDefinitions,
   resolvePiProviderBaseUrl,
@@ -112,5 +113,18 @@ describe('provider catalog', () => {
     expect(merged.find((definition) => definition.id === 'openai-chatgpt')?.oauthProviderId).toBe(
       'openai'
     );
+  });
+
+  it.each([
+    ['anthropic-messages', 'https://api.deepseek.com', 'https://api.deepseek.com/anthropic'],
+    ['anthropic-messages', 'https://api.deepseek.com/v1/', 'https://api.deepseek.com/anthropic'],
+    ['openai-completions', 'https://api.deepseek.com/anthropic', 'https://api.deepseek.com'],
+    ['openai-responses', 'https://API.deepseek.com/anthropic/', 'https://api.deepseek.com'],
+    ['anthropic-messages', 'https://relay.example.com/v1', 'https://relay.example.com/v1'],
+    ['anthropic-messages', 'https://api.deepseek.com/beta', 'https://api.deepseek.com/beta'],
+    ['openai-completions', 'https://api.deepseek.com', 'https://api.deepseek.com'],
+    ['anthropic-messages', 'not a url', 'not a url'],
+  ] as const)('DeepSeek 切换 %s 时 %s → %s', (api, from, to) => {
+    expect(baseUrlAfterApiChange(api, from)).toBe(to);
   });
 });

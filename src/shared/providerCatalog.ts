@@ -62,10 +62,7 @@ export function baseUrlAfterApiChange(nextApi: ModelApiKind, baseUrl: string): s
   const isOpenAiPath = segments.length === 0 || (segments.length === 1 && segments[0] === 'v1');
   const isAnthropicPath = segments[0] === 'anthropic';
   if (nextApi === 'anthropic-messages' && isOpenAiPath) return DEEPSEEK_ANTHROPIC_BASE;
-  if (
-    (nextApi === 'openai-completions' || nextApi === 'openai-responses') &&
-    isAnthropicPath
-  ) {
+  if ((nextApi === 'openai-completions' || nextApi === 'openai-responses') && isAnthropicPath) {
     return DEEPSEEK_OPENAI_BASE;
   }
   return baseUrl;
