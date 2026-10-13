@@ -18,6 +18,7 @@ export const IPC_CHANNELS = {
   WINDOW_CLOSE: 'window:close',
   WINDOW_IS_MAXIMIZED: 'window:is-maximized',
   WINDOW_IS_FULLSCREEN: 'window:is-fullscreen',
+  WINDOW_SET_TITLE_BAR_APPEARANCE: 'window:set-title-bar-appearance',
   WINDOW_MAXIMIZED_CHANGED: 'window:maximized-changed',
   WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
   WINDOW_SET_TRAFFIC_LIGHTS_VISIBLE: 'window:set-traffic-lights-visible',

@@ -387,6 +387,9 @@ export const IPC_PRODUCT_COVERAGE = {
   WINDOW_CLOSE: surfaces('window.close'),
   WINDOW_IS_MAXIMIZED: excluded('Renderer window-state query, not a user product action.'),
   WINDOW_IS_FULLSCREEN: excluded('Renderer window-state query, not a user product action.'),
+  WINDOW_SET_TITLE_BAR_APPEARANCE: excluded(
+    'Native Windows caption controls follow the renderer theme.'
+  ),
   WINDOW_MAXIMIZED_CHANGED: excluded('Renderer window-state event transport.'),
   WINDOW_FULLSCREEN_CHANGED: excluded('Renderer fullscreen-state event transport.'),
   WINDOW_SET_TRAFFIC_LIGHTS_VISIBLE: excluded('macOS title-bar implementation detail.'),
