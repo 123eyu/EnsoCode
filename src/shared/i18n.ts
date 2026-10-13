@@ -437,6 +437,7 @@ export const zhTranslations: Record<string, string> = {
   'Choose how to connect': '选择连接方式',
   Subscription: '订阅',
   'Provider subscription': '提供商订阅',
+  'ChatGPT (PI login)': 'ChatGPT（PI 登录）',
   'Sign in in your browser and use your subscription account.': '在浏览器中登录并使用订阅账号。',
   'Configure an endpoint and key, then fetch or test its models.':
     '配置端点和密钥后，再拉取或测试模型。',
