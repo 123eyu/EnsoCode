@@ -123,7 +123,7 @@ export type InlineSegment = { type: 'text'; text: string } | { type: 'file'; pat
 /** 编辑器段模型：文本 / 文件卡片 / 会话卡片 / Design Mode 选区 */
 export type MentionSegment =
   | { type: 'text'; text: string }
-  | { type: 'file'; path: string }
+  | { type: 'file'; path: string; label?: string }
   | { type: 'chat'; label: string; sessionFile: string }
   | { type: 'ui-element'; id: string; label: string; path: string; text: string; imageId: string };
 

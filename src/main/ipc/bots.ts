@@ -130,6 +130,11 @@ import { setBotAvatarResolver } from '../services/localImageProtocol';
 import { listMemories } from '../services/memory/store';
 import { notifyBotChat } from '../services/notifications';
 import { readStoredOauthCredentialKeys } from '../services/oauthProviders';
+import {
+  botChatPasteOwner,
+  removePastedTextFiles,
+  savePastedTextFile,
+} from '../services/pastedTextFiles';
 import { resolveRemoteModels } from '../services/remoteModels';
 import { removeConversationSessionFiles } from '../services/sessionFileCleanup';
 import { botAssistantModelCandidates, titleModelCandidates } from '../services/titleSummary';
@@ -1867,6 +1872,8 @@ export function registerBotHandlers(): void {
       }
       for (const thread of threads.slice(1)) host.discardChat(thread.id);
       if (!host.discardChat(chatId)) return INVALID;
+      for (const thread of threads)
+        removePastedTextFiles(sessionDir(), botChatPasteOwner(thread.id));
       tasks.forget(chatId);
       await browserHost.closeSession(botBrowserKey(chatId));
       await removeBotMemorySpace(app.getPath('userData'), `chat:${chatId}`);
@@ -2047,6 +2054,13 @@ export function registerBotHandlers(): void {
   handle(IPC_CHANNELS.BOT_FILE_SEARCH, 'read', (_sender, request, services) =>
     searchChatFiles(services, request)
   );
+  handle(IPC_CHANNELS.BOT_CHAT_SAVE_PASTED_TEXT, 'write', (_sender, request, { chats }) => {
+    const input = objectInput(request);
+    if (!input || !isBotId(input.chatId) || typeof input.text !== 'string')
+      return { ok: false, error: 'invalid-request' };
+    if (!chats.get(input.chatId)) return { ok: false, error: 'chat-not-found' };
+    return savePastedTextFile(sessionDir(), botChatPasteOwner(input.chatId), input.text);
+  });
   handle(IPC_CHANNELS.BOT_REWIND, 'write', (_sender, request, services) =>
     rewindBotChat(services, request)
   );

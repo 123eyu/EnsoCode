@@ -255,6 +255,7 @@ export const IPC_CHANNELS = {
   FILES_READ: 'files:read',
   // 目录媒体文件枚举（背景图文件夹随机模式）
   FILES_LIST_MEDIA: 'files:list-media',
+  FILES_SAVE_PASTED_TEXT: 'files:save-pasted-text',
   FILES_LIST_DIR: 'files:list-dir',
   FILES_READ_REL: 'files:read-rel',
   /** Markdown 预览相对图片：返回 data URL，不开放任意文件读取 */
@@ -451,6 +452,7 @@ export const IPC_CHANNELS = {
   BOT_ARTIFACT_OPEN: 'bots:artifact-open',
   /** 输入框 @文件补全：只收 chatId + 查询词，工作区根由 Main 推导 */
   BOT_FILE_SEARCH: 'bots:file-search',
+  BOT_CHAT_SAVE_PASTED_TEXT: 'bots:chat-save-pasted-text',
   /** 回退 / 重试：只收 chatId（群重试加失败 entryId），会话由 Main 按聊天推导 */
   BOT_REWIND: 'bots:rewind',
   BOT_RETRY: 'bots:retry',

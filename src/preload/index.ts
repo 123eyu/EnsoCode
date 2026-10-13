@@ -44,6 +44,7 @@ import type {
   TreeNodeDto,
   TreeQuery,
 } from '@shared/memory/graphDto';
+import type { PastedTextFileResult } from '@shared/pastedText';
 import type { PlanRespondAction } from '@shared/planMode';
 import type {
   ResourceSnapshot,
@@ -708,6 +709,12 @@ const electronAPI = {
     /** 枚举目录下的媒体文件（背景图文件夹随机模式），返回绝对路径 */
     listMedia: (dir: string): Promise<string[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.FILES_LIST_MEDIA, dir),
+    /** 超长粘贴存成 txt：只传会话 id 与文本，路径由 Main 推导 */
+    savePastedText: (request: {
+      conversationId: string;
+      text: string;
+    }): Promise<PastedTextFileResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.FILES_SAVE_PASTED_TEXT, request),
   },
 
   sessionImport: {
@@ -1322,6 +1329,9 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.BOT_SEARCH, request),
     searchFiles: (request: BotFileSearchRequest): Promise<BotFileSearchResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.BOT_FILE_SEARCH, request),
+    /** 超长粘贴存成 txt：存放目录由 Main 按 chatId 推导 */
+    savePastedText: (request: { chatId: string; text: string }): Promise<PastedTextFileResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.BOT_CHAT_SAVE_PASTED_TEXT, request),
     /** 私聊回退到持久化 user entry；结果经 AGENT_EVENT 的 rewind-done 回来 */
     rewind: (request: {
       chatId: string;
