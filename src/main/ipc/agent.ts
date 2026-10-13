@@ -111,8 +111,6 @@ import {
   resolveChatModelSpec,
   voiceCorrectionModelIdFromSettings,
 } from '../services/llama/chatModels';
-import { toStoredTokens } from '../services/mcpOAuth';
-import { getMcpOAuthStore } from '../services/mcpOAuthStore';
 import { clearMcpStatuses, recordMcpStatus } from '../services/mcpStatusCache';
 import type { Complete } from '../services/memory/distill';
 import { memorySpaceContext } from '../services/memory/space';
@@ -1041,17 +1039,13 @@ export function registerAgentHandlers(): void {
       clearMcpStatuses();
       pushMcpStatus({ type: 'mcp-status-cleared' });
     }
-    if (workerEvent.type === 'mcp-tokens-refreshed') {
-      // worker 回传的 token 同样过一道白名单，不直接落盘
-      getMcpOAuthStore().saveTokens(workerEvent.serverId, toStoredTokens(workerEvent.tokens));
-      return;
-    }
     // 手动重读结果按 requestId 在 agentHost 结算给 invoke 等待者；无主的迟到结果直接丢弃，
     // 绝不进普通事件流（renderer 的 snapshot 分支有 started / 审批副作用）
     if (
       workerEvent.type === 'session-reloaded' ||
       workerEvent.type === 'workspace-lock-result' ||
       workerEvent.type === 'oauth-pool-select' ||
+      workerEvent.type === 'mcp-oauth-refresh' ||
       workerEvent.type === 'workspace-unlock-result'
     )
       return;

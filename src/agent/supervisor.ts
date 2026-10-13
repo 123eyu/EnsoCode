@@ -61,6 +61,7 @@ import type {
   AttachedImage,
   ChildConversationMetadata,
   CoworkerInfo,
+  McpOAuthRefreshResult,
   McpServerSpawnConfig,
   MessageTiming,
   ModelRef,
@@ -705,7 +706,35 @@ export class SessionSupervisor {
   private readonly gate = new OperationGate();
   private readonly workspaceSwitch = new WorkspaceSwitchGate(this.sessions);
   private readonly pendingCommands = new Map<string, number>();
-  private readonly mcp = new McpManager({ emit: (event) => this.options.emit(event) });
+  private readonly mcp = new McpManager({
+    emit: (event) => this.options.emit(event),
+    refreshOAuth: (serverId, rejected) => this.requestMcpOAuthRefresh(serverId, rejected),
+  });
+  private readonly mcpOAuthPending = new Map<string, (result: McpOAuthRefreshResult) => void>();
+  /** MCP access token 续期只在 Main 做（refresh_token 不进 worker）；超时按临时故障处理 */
+  private readonly requestMcpOAuthRefresh = (
+    serverId: string,
+    rejected?: string
+  ): Promise<McpOAuthRefreshResult> =>
+    new Promise((resolve) => {
+      const requestId = randomUUID();
+      const finish = (result: McpOAuthRefreshResult) => {
+        clearTimeout(timer);
+        this.mcpOAuthPending.delete(requestId);
+        resolve(result);
+      };
+      const timer = setTimeout(
+        () => finish({ ok: false, unauthorized: false, error: 'MCP OAuth refresh timed out.' }),
+        30_000
+      );
+      this.mcpOAuthPending.set(requestId, finish);
+      this.options.emit({
+        type: 'mcp-oauth-refresh',
+        requestId,
+        serverId,
+        ...(rejected ? { rejected } : {}),
+      });
+    });
   private readonly bgTasks: BackgroundTaskManager;
   /** Bot 写成员在同一工作区的文件占用 / 全局命令独占（全部会话同进程共享） */
   private readonly workspaceClaims = new WorkspaceClaims();
@@ -998,6 +1027,10 @@ export class SessionSupervisor {
   handleCommand(command: AgentCommand): void {
     if (command.type === 'oauth-pool-result') {
       this.oauthPoolPending.get(command.requestId)?.(command);
+      return;
+    }
+    if (command.type === 'mcp-oauth-refresh-result') {
+      this.mcpOAuthPending.get(command.requestId)?.(command.result);
       return;
     }
     if (command.type === 'lock-workspace' || command.type === 'unlock-workspace') {
