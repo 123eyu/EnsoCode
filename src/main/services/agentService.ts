@@ -12,7 +12,9 @@ import type {
   AgentInstanceStatus,
   AgentListReceipt,
   AgentMode,
+  AgentRunActivity,
   AgentRunGate,
+  AgentRunProgress,
   AgentRunReport,
   AgentRunSnapshot,
   AgentRunStatus,
@@ -22,6 +24,7 @@ import type {
   AgentWaitReceipt,
   AgentWorkerEvent,
 } from '@shared/types/agent';
+import { AGENT_WAIT_DEFAULT_MS, AGENT_WAIT_MAX_MS } from '@shared/types/agent';
 
 interface RuntimeResult {
   ok: boolean;
@@ -93,6 +96,7 @@ interface AgentRecord {
   status: AgentInstanceStatus;
   activeRunId?: string;
   queuedRunIds: string[];
+  title: string;
 }
 
 interface RunRecord {
@@ -112,6 +116,9 @@ interface RunRecord {
   startedAt?: number;
   finishedAt?: number;
   validationAbort?: AbortController;
+  activity?: AgentRunActivity;
+  /** 结束态已经由工具返回值告诉模型（wait / report / 自己 stop 等），不再另发通知 */
+  delivered: boolean;
 }
 
 interface Waiter {
@@ -125,6 +132,8 @@ export interface AgentServiceOptions {
   randomUuid?: () => string;
   now?: () => number;
   allowedModes?: (context: AgentControlContext) => ReadonlySet<AgentMode>;
+  /** Run 结束而模型还不知情时通知其父会话 */
+  notify?: (context: AgentControlContext, text: string, urgent: boolean) => void;
 }
 
 const TERMINAL_RUN_STATUSES: ReadonlySet<AgentRunStatus> = new Set([
@@ -156,6 +165,41 @@ function projectedText(message: unknown): string | undefined {
     .join('');
   return text || undefined;
 }
+
+const ACTIVITY_DETAIL_KEYS = ['command', 'path', 'pattern', 'query', 'url', 'description'];
+
+/** 子会话最新一条消息 → 正在做什么：最后一个工具调用、写回复或思考 */
+function projectedActivity(message: unknown): AgentRunActivity | undefined {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return undefined;
+  const value = message as { role?: unknown; content?: unknown };
+  if (value.role === 'toolResult') return { phase: 'thinking' };
+  if (value.role !== 'assistant' || !Array.isArray(value.content)) return undefined;
+  const last = value.content.at(-1) as
+    | { type?: unknown; name?: unknown; arguments?: unknown }
+    | undefined;
+  if (last?.type === 'toolCall' && typeof last.name === 'string') {
+    const args =
+      last.arguments && typeof last.arguments === 'object'
+        ? (last.arguments as Record<string, unknown>)
+        : {};
+    const detail = ACTIVITY_DETAIL_KEYS.map((key) => args[key]).find(
+      (candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== ''
+    );
+    return {
+      phase: 'tool',
+      tool: last.name,
+      ...(detail ? { detail: detail.trim().split('\n', 1)[0].slice(0, 80) } : {}),
+    };
+  }
+  return { phase: last?.type === 'text' ? 'writing' : 'thinking' };
+}
+
+const NOTIFY_TEXT_LIMIT = 1_500;
+
+const formatElapsed = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+};
 
 function promptForRun(run: RunRecord): string {
   if (run.schema === undefined) return run.prompt;
@@ -194,6 +238,7 @@ export class AgentService implements AgentServiceContract {
       identity,
       status: 'ready',
       queuedRunIds: [],
+      title: identity.instanceName,
     });
     return true;
   }
@@ -239,11 +284,12 @@ export class AgentService implements AgentServiceContract {
         identity,
         status: 'ready',
         queuedRunIds: [],
+        title: request.name?.trim() || request.description,
       };
       const run = this.createRun(agent, runId, request.prompt, request.schema, request.gate);
       this.agents.set(agentId, agent);
       this.runs.set(runId, run);
-      const started = await this.startRun(agent, run);
+      const started = await this.startRun(agent, run, true);
       if (!started.ok) {
         this.agents.delete(agentId);
         this.runs.delete(runId);
@@ -319,7 +365,7 @@ export class AgentService implements AgentServiceContract {
           },
         };
       }
-      const started = await this.startRun(agent.value, run);
+      const started = await this.startRun(agent.value, run, true);
       if (!started.ok) return started;
       return {
         ok: true,
@@ -342,6 +388,8 @@ export class AgentService implements AgentServiceContract {
       }
       const agent = this.agents.get(run.value.agentId);
       if (!agent) return failure('not-found', 'Agent was not found.');
+      // 模型自己停的：stop 回执即知情；停的途中恰好跑完也不再另发通知
+      run.value.delivered = true;
       if (run.value.status === 'queued') {
         agent.queuedRunIds = agent.queuedRunIds.filter((id) => id !== run.value.runId);
       } else if (run.value.status !== 'validating') {
@@ -351,7 +399,10 @@ export class AgentService implements AgentServiceContract {
           agentId: agent.agentId,
           runId: run.value.runId,
         });
-        if (!stopped.ok) return failure('runtime-unavailable', stopped.error ?? 'Stop failed.');
+        if (!stopped.ok) {
+          run.value.delivered = TERMINAL_RUN_STATUSES.has(run.value.status);
+          return failure('runtime-unavailable', stopped.error ?? 'Stop failed.');
+        }
       } else {
         run.value.validationAbort?.abort();
       }
@@ -385,6 +436,7 @@ export class AgentService implements AgentServiceContract {
       for (const run of this.runs.values()) {
         if (run.agentId === agent.value.agentId && !TERMINAL_RUN_STATUSES.has(run.status)) {
           run.validationAbort?.abort();
+          run.delivered = true;
           this.finishRun(run, 'cancelled');
         }
       }
@@ -401,6 +453,7 @@ export class AgentService implements AgentServiceContract {
     if (!TERMINAL_RUN_STATUSES.has(run.value.status)) {
       return failure('invalid-state', 'Run has not reached an immutable result.');
     }
+    run.value.delivered = true;
     return {
       ok: true,
       value: {
@@ -471,6 +524,10 @@ export class AgentService implements AgentServiceContract {
       if (!owned.ok) return owned;
     }
     const until = request.until ?? 'all';
+    const timeoutMs = Math.min(
+      Math.max(0, request.timeoutMs ?? AGENT_WAIT_DEFAULT_MS),
+      AGENT_WAIT_MAX_MS
+    );
     const ready = () => this.waitSatisfied(request.runIds, until);
     if (ready()) return { ok: true, value: this.waitReceipt(request.runIds, false, false) };
     if (signal?.aborted) {
@@ -497,11 +554,18 @@ export class AgentService implements AgentServiceContract {
       };
       this.waiters.add(waiter);
       signal?.addEventListener('abort', onAbort, { once: true });
-      if (request.timeoutMs !== undefined) {
-        timer = setTimeout(() => waiter.settle(false, true), Math.max(0, request.timeoutMs));
-      }
+      timer = setTimeout(() => waiter.settle(false, true), timeoutMs);
       if (ready()) waiter.settle(false, false);
     });
+  }
+
+  /** 父会话名下未结束的 Run 进度（界面等待行展开用） */
+  progress(ownerId: string): AgentRunProgress[] {
+    return [...this.runs.values()]
+      .filter(
+        (run) => run.context.owner.ownerId === ownerId && !TERMINAL_RUN_STATUSES.has(run.status)
+      )
+      .map((run) => this.runProgress(run));
   }
 
   observe(event: AgentWorkerEvent | { type: 'worker-exited' }): void {
@@ -509,6 +573,8 @@ export class AgentService implements AgentServiceContract {
       for (const agent of this.agents.values()) {
         const active = agent.activeRunId ? this.runs.get(agent.activeRunId) : undefined;
         if (active && !TERMINAL_RUN_STATUSES.has(active.status)) {
+          // 父会话随 worker 一起没了，无人可通知
+          active.delivered = true;
           this.finishRun(active, 'interrupted', 'Agent worker exited.');
         }
         agent.activeRunId = undefined;
@@ -539,6 +605,8 @@ export class AgentService implements AgentServiceContract {
     if (event.type === 'message-upsert' && active) {
       const text = projectedText(event.message);
       if (text !== undefined) active.text = text;
+      const activity = projectedActivity(event.message);
+      if (activity) active.activity = activity;
       if (event.message.usage) {
         active.usageByMessage.set(event.index, {
           input: event.message.usage.input,
@@ -657,12 +725,14 @@ export class AgentService implements AgentServiceContract {
       ...(gate !== undefined ? { gate } : {}),
       createdAt: this.now(),
       usageByMessage: new Map(),
+      delivered: false,
     };
   }
 
   private async startRun(
     agent: AgentRecord,
-    run: RunRecord
+    run: RunRecord,
+    callerAwaits = false
   ): Promise<AgentServiceResult<never> | { ok: true }> {
     agent.activeRunId = run.runId;
     agent.status = 'active';
@@ -680,6 +750,8 @@ export class AgentService implements AgentServiceContract {
     if (prompted.ok) return { ok: true };
     agent.activeRunId = undefined;
     agent.status = 'ready';
+    // spawn / send 当场启动失败由回执告知；排队后才启动的失败要另行通知
+    if (callerAwaits) run.delivered = true;
     this.finishRun(run, 'failed', prompted.error ?? 'Prompt failed.');
     return failure('runtime-unavailable', prompted.error ?? 'Prompt failed.');
   }
@@ -762,8 +834,31 @@ export class AgentService implements AgentServiceContract {
     if (TERMINAL_RUN_STATUSES.has(run.status)) return;
     run.status = status;
     run.finishedAt = this.now();
+    run.activity = undefined;
     if (error !== undefined) run.error = error;
+    // 在等它的 wait 同步结算并标记已知情，之后仍未知情才通知
     this.flushWaiters();
+    if (!run.delivered) {
+      run.delivered = true;
+      this.options.notify?.(run.context, this.completionText(run), status !== 'succeeded');
+    }
+  }
+
+  private completionText(run: RunRecord): string {
+    const title = this.agents.get(run.agentId)?.title ?? run.agentId;
+    const elapsed = formatElapsed(
+      (run.finishedAt ?? this.now()) - (run.startedAt ?? run.createdAt)
+    );
+    const body = run.status === 'succeeded' ? run.text?.trim() : run.error;
+    const excerpt =
+      body && body.length > NOTIFY_TEXT_LIMIT
+        ? `${body.slice(0, NOTIFY_TEXT_LIMIT)}\n…(truncated)`
+        : body;
+    return [
+      `Subagent "${title}" (agentId ${run.agentId}, runId ${run.runId}) ${run.status} after ${elapsed}.`,
+      ...(excerpt ? [excerpt] : []),
+      `Use subagent report with runId ${run.runId} for the full result.`,
+    ].join('\n');
   }
 
   private snapshot(run: RunRecord): AgentRunSnapshot {
@@ -803,10 +898,30 @@ export class AgentService implements AgentServiceContract {
     interrupted: boolean,
     timedOut: boolean
   ): AgentWaitReceipt {
+    const runs = runIds.map((runId) => this.runs.get(runId)!);
+    for (const run of runs) {
+      if (TERMINAL_RUN_STATUSES.has(run.status)) run.delivered = true;
+    }
+    const pending = runs
+      .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
+      .map((run) => this.runProgress(run));
     return {
-      runs: runIds.map((runId) => this.snapshot(this.runs.get(runId)!)),
+      runs: runs.map((run) => this.snapshot(run)),
       timedOut,
       interrupted,
+      ...(pending.length > 0 && (timedOut || interrupted) ? { pending } : {}),
+    };
+  }
+
+  private runProgress(run: RunRecord): AgentRunProgress {
+    const title = this.agents.get(run.agentId)?.title;
+    return {
+      agentId: run.agentId,
+      runId: run.runId,
+      ...(title ? { title } : {}),
+      status: run.status,
+      elapsedMs: Math.max(0, this.now() - (run.startedAt ?? run.createdAt)),
+      ...(run.activity ? { activity: run.activity } : {}),
     };
   }
 

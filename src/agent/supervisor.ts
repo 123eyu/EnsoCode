@@ -1491,6 +1491,12 @@ export class SessionSupervisor {
         else managed.asks.expire(command.requestId);
         return;
       }
+      case 'agent-notify': {
+        const managed = this.sessions.get(command.identity.sessionId);
+        if (!managed || !isSameGeneration(managed.identity, command.identity)) return;
+        this.notifier.notify(managed.identity.sessionId, command.text, { urgent: command.urgent });
+        return;
+      }
       case 'set-approval-mode':
         this.must(command.identity).gate.mode = command.mode;
         return;
@@ -2021,7 +2027,8 @@ export class SessionSupervisor {
     const buildBaseTools = (
       toolGate: ApprovalGate,
       cp?: CheckpointManager,
-      writeScope?: readonly string[]
+      writeScope?: readonly string[],
+      foregroundSessionId = sessionId
     ): Def[] => {
       const guarded = (definition: Def): Def => (cp ? withCheckpoint(definition, cp) : definition);
       const claimContext = { owner: sessionId, cwd };
@@ -2093,7 +2100,8 @@ export class SessionSupervisor {
                 this.bgTasks,
                 sessionId,
                 cwd,
-                backgroundTransform
+                backgroundTransform,
+                foregroundSessionId
               )
             )
           )
@@ -2213,7 +2221,12 @@ export class SessionSupervisor {
               resolved?.tools === 'readonly' ||
               agentType?.tools === 'readonly'
                 ? readOnlyTools(childGate)
-                : buildBaseTools(childGate, undefined, agentType?.writeScope)),
+                : buildBaseTools(
+                    childGate,
+                    undefined,
+                    agentType?.writeScope,
+                    childIdentity?.sessionId
+                  )),
               ...(typed ? typeMcpTools : wrapMcpTools(childGate)),
               ...(extraTools as Def[]),
               ...(childExploreFold ? createExploreFoldTools(childExploreFold) : []),
@@ -2363,11 +2376,12 @@ export class SessionSupervisor {
     const unifiedSubagentTool = createUnifiedSubagentTool({
       agentTypes,
       models: subagentModels,
-      invoke: async (request, signal) => {
-        const response = await agentControl.invoke(request, signal);
+      invoke: async (request, signal, detach) => {
+        const response = await agentControl.invoke(request, signal, detach);
         coworkerIdle.observe(request, response);
         return response;
       },
+      trackWait: (toolCallId) => this.bgTasks.trackBlockingWait(sessionId, toolCallId),
     });
     const askManager = this.createAskManager(identity, gate.humanTimeoutMs);
     // 内嵌浏览器：页面活在 Main，worker 只发 browser-invoke 事件。每个父会话一张挂起表。
@@ -2500,7 +2514,7 @@ export class SessionSupervisor {
           ]
         : []),
       ...(exploreFold ? createExploreFoldTools(exploreFold) : []),
-      ...(toolEnabled('background_tasks') ? createTaskTools(this.bgTasks) : []),
+      ...(toolEnabled('background_tasks') ? createTaskTools(this.bgTasks, sessionId) : []),
       ...(toolEnabled('goal')
         ? createGoalTools((kind, note) => {
             const managed = managedRef ?? this.sessions.get(sessionId);

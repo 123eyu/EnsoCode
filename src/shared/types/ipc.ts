@@ -180,6 +180,8 @@ export const IPC_CHANNELS = {
   AGENT_TASK_STOP: 'agent:task-stop',
   /** 把运行中的前台命令移交为后台任务 */
   AGENT_TOOL_BACKGROUND: 'agent:tool-background',
+  /** 会话名下在跑子代理的进度（等待行展开） */
+  AGENT_SUBAGENT_PROGRESS: 'agent:subagent-progress',
   AGENT_SUBAGENT_STOP: 'agent:subagent-stop',
   AGENT_WORKFLOW_STOP: 'agent:workflow-stop',
   AGENT_REWIND: 'agent:rewind',

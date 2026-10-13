@@ -950,6 +950,10 @@ export function registerAgentHandlers(): void {
   });
 
   agentService = new AgentService({
+    notify: (context, text, urgent) => {
+      const identity = rootIdentity(context.owner.ownerId);
+      if (identity) sendAgentCommand({ type: 'agent-notify', identity, text, urgent });
+    },
     allowedModes: (context) => {
       const state = readSettingsState() ?? {};
       const projects = Array.isArray(state.projects) ? state.projects : [];
@@ -2030,6 +2034,11 @@ export function registerAgentHandlers(): void {
       return backgroundForegroundTool(identity, toolCallId);
     }
   );
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_SUBAGENT_PROGRESS, (_event, sessionId: unknown) => {
+    const identity = exactIdentity(sessionId);
+    return identity ? (agentService?.progress(identity.sessionId) ?? []) : [];
+  });
 
   ipcMain.handle(
     IPC_CHANNELS.AGENT_WORKFLOW_STOP,

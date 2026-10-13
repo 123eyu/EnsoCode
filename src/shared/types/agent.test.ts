@@ -2426,6 +2426,19 @@ describe('受保护动作底线协议', () => {
 });
 
 describe('等人超时协议', () => {
+  it('agent-notify 命令只接受根会话、非空正文与布尔 urgent', () => {
+    const base = {
+      type: 'agent-notify',
+      identity: parent,
+      text: 'Subagent finished',
+      urgent: false,
+    };
+    expect(parseAgentCommand(base)).toEqual(base);
+    expect(parseAgentCommand({ ...base, text: '' })).toBeNull();
+    expect(parseAgentCommand({ ...base, urgent: 'yes' })).toBeNull();
+    expect(parseAgentCommand({ ...base, extra: 1 })).toBeNull();
+  });
+
   it('request-timeout 命令只接受 approval / ask 与非空 requestId', () => {
     const base = { type: 'request-timeout', identity: parent, requestId: 'r1' };
     expect(parseAgentCommand({ ...base, kind: 'approval' })).toEqual({ ...base, kind: 'approval' });

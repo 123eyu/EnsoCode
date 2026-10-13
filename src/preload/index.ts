@@ -103,6 +103,7 @@ import type {
 import { IPC_CHANNELS } from '@shared/types';
 import type {
   AgentActionResult,
+  AgentRunProgress,
   AgentSpawnRequest,
   ApprovalDecision,
   ApprovalMode,
@@ -829,6 +830,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.AGENT_TASK_STOP, sessionId, taskId),
     backgroundTool: (sessionId: string, toolCallId: string): Promise<AgentActionResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.AGENT_TOOL_BACKGROUND, sessionId, toolCallId),
+    subagentProgress: (sessionId: string): Promise<AgentRunProgress[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_SUBAGENT_PROGRESS, sessionId),
     stopSubagent: (sessionId: string, agentId: string): Promise<AgentActionResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.AGENT_SUBAGENT_STOP, sessionId, agentId),
     stopWorkflow: (sessionId: string, runId: string): Promise<AgentActionResult> =>

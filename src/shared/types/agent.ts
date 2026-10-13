@@ -444,6 +444,10 @@ export interface AgentControlWaitRequest {
   timeoutMs?: number;
 }
 
+/** 子代理阻塞等待：不写时限按默认，写了也不超过上限（与 task_output 阻塞上限一致） */
+export const AGENT_WAIT_DEFAULT_MS = 5 * 60 * 1000;
+export const AGENT_WAIT_MAX_MS = 10 * 60 * 1000;
+
 export interface AgentControlListRequest {
   context: AgentControlContext;
   requestId: string;
@@ -496,7 +500,24 @@ export interface AgentWaitReceipt {
   runs: AgentRunSnapshot[];
   timedOut: boolean;
   interrupted: boolean;
+  /** 超时或被打断时仍在跑的 Run 进度；Run 不会因此停止 */
+  pending?: AgentRunProgress[];
 }
+
+/** 未结束 Run 的进度：给模型的超时回执与界面等待行共用 */
+export interface AgentRunProgress {
+  agentId: string;
+  runId: string;
+  title?: string;
+  status: AgentRunStatus;
+  elapsedMs: number;
+  /** 子代理此刻在做的事：在跑的工具或正在写回复 */
+  activity?: AgentRunActivity;
+}
+
+export type AgentRunActivity =
+  | { phase: 'thinking' | 'writing' }
+  | { phase: 'tool'; tool: string; detail?: string };
 
 export interface AgentListItem {
   agentId: string;
@@ -635,7 +656,7 @@ export function parseAgentControlToolRequest(value: unknown): AgentControlToolRe
         (value.timeoutMs === undefined ||
           (Number.isInteger(value.timeoutMs) &&
             (value.timeoutMs as number) >= 0 &&
-            (value.timeoutMs as number) <= 86_400_000))
+            (value.timeoutMs as number) <= AGENT_WAIT_MAX_MS))
         ? (value as unknown as AgentControlToolRequest)
         : null;
     case 'report':
@@ -1183,6 +1204,8 @@ export type AgentCommand =
       kind: 'approval' | 'ask';
       requestId: string;
     }
+  /** Main 记录的子代理 Run 结束且模型尚未知情：投给父会话（空闲唤醒、忙时搭车） */
+  | { type: 'agent-notify'; identity: SessionIdentity; text: string; urgent: boolean }
   | { type: 'set-approval-mode'; identity: SessionIdentity; mode: ApprovalMode }
   | { type: 'set-plan-mode'; identity: SessionIdentity; active: boolean }
   | {
@@ -3202,6 +3225,13 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
         parseAnySessionIdentity(value.identity) &&
         (value.kind === 'approval' || value.kind === 'ask') &&
         isNonEmptyString(value.requestId)
+        ? (value as unknown as AgentCommand)
+        : null;
+    case 'agent-notify':
+      return hasExactKeys(value, ['type', 'identity', 'text', 'urgent']) &&
+        parseSessionIdentity(value.identity) &&
+        isNonEmptyString(value.text) &&
+        typeof value.urgent === 'boolean'
         ? (value as unknown as AgentCommand)
         : null;
     case 'set-approval-mode':

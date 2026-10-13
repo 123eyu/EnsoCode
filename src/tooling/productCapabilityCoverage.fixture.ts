@@ -500,6 +500,9 @@ export const IPC_PRODUCT_COVERAGE = {
   AGENT_TOOL_BACKGROUND: excluded(
     'Desktop tool-row control that moves a running foreground shell command into a background task; renderer-only, not an Enso capability.'
   ),
+  AGENT_SUBAGENT_PROGRESS: excluded(
+    'Read-only progress of running subagents shown in the desktop wait row; renderer-only, not an Enso capability.'
+  ),
   AGENT_WORKFLOW_STOP: excluded('Side panel control to stop a running workflow run.'),
   AGENT_SUBAGENT_STOP: excluded(
     'Desktop TaskBar control to abort a stuck or running subagent; renderer-only, not an Enso capability.'
