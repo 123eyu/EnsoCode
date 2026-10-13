@@ -178,6 +178,18 @@ describe('agent control tool protocol', () => {
     expect(parseAgentWorkerEvent({ ...invoke, identity: { sessionId: 'parent' } })).toBeNull();
     expect(parseAgentWorkerEvent({ ...invoke, requestId: '' })).toBeNull();
     expect(parseAgentCommand({ ...invoke, type: 'agent-control-result' })).toBeNull();
+    const cancel = {
+      type: 'agent-control-cancel',
+      identity: parent,
+      seq: 4,
+      requestId: 'rpc-1',
+      kind: 'detach',
+    } as const;
+    expect(parseAgentWorkerEvent(cancel)).toEqual(cancel);
+    expect(parseAgentWorkerEvent({ ...cancel, kind: 'abort' })).not.toBeNull();
+    expect(parseAgentWorkerEvent({ ...cancel, kind: 'stop' })).toBeNull();
+    const { kind: _kind, ...withoutKind } = cancel;
+    expect(parseAgentWorkerEvent(withoutKind)).toBeNull();
   });
 
   it('accepts consumption only with exact session generation, sequence and operation nonce', () => {

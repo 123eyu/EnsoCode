@@ -951,6 +951,7 @@ export function registerAgentHandlers(): void {
 
   agentService = new AgentService({
     notify: (context, text, urgent) => {
+      // 投给父会话当前 generation：换代前派出的 Run 结束后照样通知接续的会话
       const identity = rootIdentity(context.owner.ownerId);
       if (identity) sendAgentCommand({ type: 'agent-notify', identity, text, urgent });
     },
@@ -1342,7 +1343,7 @@ export function registerAgentHandlers(): void {
       return;
     }
     if (workerEvent.type === 'agent-control-cancel') {
-      pendingAgentControl.get(workerEvent.requestId)?.abort();
+      pendingAgentControl.get(workerEvent.requestId)?.abort(workerEvent.kind);
       return;
     }
     if (workerEvent.type === 'agent-control-invoke') {

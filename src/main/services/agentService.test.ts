@@ -696,4 +696,114 @@ describe('AgentService wait bounds and completion notify', () => {
     ]);
     expect(service.progress('chat-2')).toEqual([]);
   });
+
+  it('until:all 等多个 Run：先结束的不单独通知，由 wait 回执一并交付', async () => {
+    const notify = vi.fn();
+    const { service, children } = setup({ notify });
+    const a = await service.spawn(spawnRequest());
+    const b = await service.spawn(spawnRequest({ requestId: 'request-2' }));
+    if (!a.ok || !b.ok) throw new Error('spawn failed');
+    const waiting = service.wait({
+      context,
+      requestId: 'w',
+      runIds: [a.value.runId, b.value.runId],
+      until: 'all',
+    });
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 2,
+      turnId: a.value.runId,
+    });
+    expect(notify).not.toHaveBeenCalled();
+    service.observe({
+      type: 'turn-completed',
+      identity: children[1],
+      seq: 2,
+      turnId: b.value.runId,
+    });
+    expect(await waiting).toMatchObject({ ok: true, value: { timedOut: false } });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('until:all 等待中被插话打断：回执交付已结束的 Run，未结束的之后照常通知', async () => {
+    const notify = vi.fn();
+    const { service, children } = setup({ notify });
+    const a = await service.spawn(spawnRequest());
+    const b = await service.spawn(spawnRequest({ requestId: 'request-2' }));
+    if (!a.ok || !b.ok) throw new Error('spawn failed');
+    const detach = new AbortController();
+    const waiting = service.wait(
+      { context, requestId: 'w', runIds: [a.value.runId, b.value.runId], until: 'all' },
+      detach.signal
+    );
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 2,
+      turnId: a.value.runId,
+    });
+    detach.abort('detach');
+    expect(await waiting).toMatchObject({ ok: true, value: { interrupted: true } });
+    expect(notify).not.toHaveBeenCalled();
+    service.observe({
+      type: 'turn-completed',
+      identity: children[1],
+      seq: 2,
+      turnId: b.value.runId,
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][1]).toContain(b.value.runId);
+  });
+
+  it('硬中断丢弃回执：已结束未交付的 Run 补发通知，不算已交付', async () => {
+    const notify = vi.fn();
+    const { service, children } = setup({ notify });
+    const a = await service.spawn(spawnRequest());
+    const b = await service.spawn(spawnRequest({ requestId: 'request-2' }));
+    if (!a.ok || !b.ok) throw new Error('spawn failed');
+    const abort = new AbortController();
+    const waiting = service.wait(
+      { context, requestId: 'w', runIds: [a.value.runId, b.value.runId], until: 'all' },
+      abort.signal
+    );
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 2,
+      turnId: a.value.runId,
+    });
+    abort.abort('abort');
+    await waiting;
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][1]).toContain(a.value.runId);
+    service.observe({
+      type: 'turn-completed',
+      identity: children[1],
+      seq: 2,
+      turnId: b.value.runId,
+    });
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify.mock.calls[1][1]).toContain(b.value.runId);
+  });
+
+  it('stop 途中 Run 自然结束而 stop 失败：补发通知', async () => {
+    const notify = vi.fn();
+    const { service, runtime, children } = setup({ notify });
+    const spawned = await service.spawn(spawnRequest());
+    if (!spawned.ok) throw new Error(spawned.error);
+    vi.mocked(runtime.stop).mockImplementationOnce(async () => {
+      service.observe({
+        type: 'turn-completed',
+        identity: children[0],
+        seq: 2,
+        turnId: spawned.value.runId,
+      });
+      return { ok: false, error: 'child gone' };
+    });
+    const stopped = await service.stop({ context, requestId: 's', runId: spawned.value.runId });
+    expect(stopped.ok).toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][1]).toContain('succeeded');
+  });
 });

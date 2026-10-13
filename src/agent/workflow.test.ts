@@ -175,6 +175,46 @@ describe('workflow tool', () => {
     ]);
   });
 
+  it('成员跑过单次 wait 上限时接着等，不判失败也不停掉', async () => {
+    const emit = vi.fn();
+    let waits = 0;
+    const invoke = vi.fn(async (request: AgentControlToolRequest) => {
+      if (request.operation === 'spawn') return { ok: true as const, value: { runId: 'slow' } };
+      if (request.operation === 'wait') {
+        waits++;
+        // Main 单次 wait 封顶，成员超过上限仍在跑：前两次超时带 pending 进度
+        return {
+          ok: true as const,
+          value:
+            waits < 3
+              ? {
+                  runs: [{ status: 'running' }],
+                  timedOut: true,
+                  interrupted: false,
+                  pending: [{ runId: 'slow', status: 'running', elapsedMs: waits * 600_000 }],
+                }
+              : { runs: [{ status: 'succeeded' }], timedOut: false, interrupted: false },
+        };
+      }
+      if (request.operation === 'report') return { ok: true as const, value: { text: 'late ok' } };
+      throw new Error(`unexpected ${request.operation}`);
+    });
+    const tool = createWorkflowTool({ invoke, emit, randomUuid: () => 'workflow-slow' });
+    const result = await tool.execute(
+      'call-slow',
+      {
+        meta: { name: 'slow', description: 'Long member' },
+        script: "return await agent('slow work', { label: 'slow' });",
+      },
+      undefined,
+      undefined,
+      {} as never
+    );
+    expect(waits).toBe(3);
+    expect(result.details).toMatchObject({ result: 'late ok' });
+    expect(invoke.mock.calls.map(([request]) => request.operation)).not.toContain('stop');
+  });
+
   it('先后启动的子代理不进同一并行批次', async () => {
     const emit = vi.fn();
     const tool = createWorkflowTool({

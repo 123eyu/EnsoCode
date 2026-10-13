@@ -1783,6 +1783,8 @@ export type AgentWorkerEvent =
       identity: SessionIdentity | ChildSessionIdentity;
       seq: number;
       requestId: string;
+      /** abort：本轮中止，worker 丢弃回执；detach：只结束等待，回执照常交给模型 */
+      kind: 'abort' | 'detach';
     }
   | {
       type: 'goal-signal';
@@ -3646,8 +3648,9 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
         ? (value as unknown as AgentWorkerEvent)
         : null;
     case 'agent-control-cancel':
-      return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId']) &&
-        isNonEmptyString(value.requestId)
+      return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId', 'kind']) &&
+        isNonEmptyString(value.requestId) &&
+        (value.kind === 'abort' || value.kind === 'detach')
         ? (value as unknown as AgentWorkerEvent)
         : null;
     case 'browser-invoke':

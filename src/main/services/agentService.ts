@@ -124,7 +124,7 @@ interface RunRecord {
 interface Waiter {
   runIds: readonly string[];
   until: 'all' | 'any';
-  settle(interrupted: boolean, timedOut: boolean): void;
+  settle(interrupted: boolean, timedOut: boolean, dropped?: boolean): void;
 }
 
 export interface AgentServiceOptions {
@@ -400,7 +400,9 @@ export class AgentService implements AgentServiceContract {
           runId: run.value.runId,
         });
         if (!stopped.ok) {
-          run.value.delivered = TERMINAL_RUN_STATUSES.has(run.value.status);
+          // 停的途中已自然结束：模型只看到 stop 失败，补发通知
+          run.value.delivered = false;
+          if (TERMINAL_RUN_STATUSES.has(run.value.status)) this.notifyUndelivered(run.value);
           return failure('runtime-unavailable', stopped.error ?? 'Stop failed.');
         }
       } else {
@@ -531,22 +533,25 @@ export class AgentService implements AgentServiceContract {
     const ready = () => this.waitSatisfied(request.runIds, until);
     if (ready()) return { ok: true, value: this.waitReceipt(request.runIds, false, false) };
     if (signal?.aborted) {
-      return { ok: true, value: this.waitReceipt(request.runIds, true, false) };
+      return {
+        ok: true,
+        value: this.waitReceipt(request.runIds, true, false, signal.reason === 'abort'),
+      };
     }
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waiter: Waiter = {
         runIds: [...request.runIds],
         until,
-        settle: (interrupted, timedOut) => {
+        settle: (interrupted, timedOut, dropped = false) => {
           cleanup();
           resolve({
             ok: true,
-            value: this.waitReceipt(request.runIds, interrupted, timedOut),
+            value: this.waitReceipt(request.runIds, interrupted, timedOut, dropped),
           });
         },
       };
-      const onAbort = () => waiter.settle(true, false);
+      const onAbort = () => waiter.settle(true, false, signal?.reason === 'abort');
       const cleanup = () => {
         this.waiters.delete(waiter);
         if (timer) clearTimeout(timer);
@@ -836,12 +841,16 @@ export class AgentService implements AgentServiceContract {
     run.finishedAt = this.now();
     run.activity = undefined;
     if (error !== undefined) run.error = error;
-    // 在等它的 wait 同步结算并标记已知情，之后仍未知情才通知
+    // 在等它的 wait 同步结算并标记已知情；仍有 wait 在等它（until:all）则交给那次回执
     this.flushWaiters();
-    if (!run.delivered) {
-      run.delivered = true;
-      this.options.notify?.(run.context, this.completionText(run), status !== 'succeeded');
-    }
+    this.notifyUndelivered(run);
+  }
+
+  private notifyUndelivered(run: RunRecord): void {
+    if (run.delivered) return;
+    for (const waiter of this.waiters) if (waiter.runIds.includes(run.runId)) return;
+    run.delivered = true;
+    this.options.notify?.(run.context, this.completionText(run), run.status !== 'succeeded');
   }
 
   private completionText(run: RunRecord): string {
@@ -896,11 +905,15 @@ export class AgentService implements AgentServiceContract {
   private waitReceipt(
     runIds: readonly string[],
     interrupted: boolean,
-    timedOut: boolean
+    timedOut: boolean,
+    dropped = false
   ): AgentWaitReceipt {
     const runs = runIds.map((runId) => this.runs.get(runId)!);
     for (const run of runs) {
-      if (TERMINAL_RUN_STATUSES.has(run.status)) run.delivered = true;
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) continue;
+      // 硬中断时 worker 丢弃回执，模型看不到，改走通知
+      if (dropped) this.notifyUndelivered(run);
+      else run.delivered = true;
     }
     const pending = runs
       .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))

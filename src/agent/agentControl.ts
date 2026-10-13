@@ -44,21 +44,22 @@ export class AgentControlInvoker {
     // spawn/send 可能已在 Main 建好 Agent/Run：abort 只让 Main 打断附带的等待，回执照常回来
     const keepReceipt = request.operation === 'spawn' || request.operation === 'send';
     return new Promise((resolve, reject) => {
-      const cancel = () =>
+      const cancel = (kind: 'abort' | 'detach') =>
         this.emit({
           type: 'agent-control-cancel',
           identity: this.identity,
           seq: this.nextSeq(),
           requestId,
+          kind,
         });
       const onAbort = () => {
         const pending = keepReceipt ? this.pending.get(requestId) : this.take(requestId);
         if (!pending) return;
-        cancel();
+        cancel('abort');
         if (!keepReceipt) reject(new Error('Agent control wait interrupted.'));
       };
       const onDetach = () => {
-        if (this.pending.has(requestId)) cancel();
+        if (this.pending.has(requestId)) cancel('detach');
       };
       this.pending.set(requestId, {
         resolve,

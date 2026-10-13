@@ -274,9 +274,13 @@ async function runAgent(
     runId =
       isRecord(spawned.value) && typeof spawned.value.runId === 'string' ? spawned.value.runId : '';
     if (!runId) throw new Error('missing run id');
-    const waited = await deps.invoke({ operation: 'wait', runIds: [runId], until: 'all' }, signal);
-    if (signal?.aborted) throw new Error('workflow cancelled');
-    if (!waited.ok) throw new Error(waited.error);
+    // Main 的 wait 单次最多 10 分钟（给模型的上限）；编排要等到成员真正结束
+    let waited: AgentControlToolResponse;
+    do {
+      waited = await deps.invoke({ operation: 'wait', runIds: [runId], until: 'all' }, signal);
+      if (signal?.aborted) throw new Error('workflow cancelled');
+      if (!waited.ok) throw new Error(waited.error);
+    } while (isRecord(waited.value) && waited.value.timedOut === true);
     const reported = await deps.invoke({ operation: 'report', runId });
     const outcome = workflowChildOutcome(
       { report: waited.value },

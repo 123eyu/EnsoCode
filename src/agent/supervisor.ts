@@ -1493,6 +1493,7 @@ export class SessionSupervisor {
       }
       case 'agent-notify': {
         const managed = this.sessions.get(command.identity.sessionId);
+        // 只挡投递途中换代的命令；Main 总按当前 generation 发，不区分 Run 派出时的 generation
         if (!managed || !isSameGeneration(managed.identity, command.identity)) return;
         this.notifier.notify(managed.identity.sessionId, command.text, { urgent: command.urgent });
         return;
