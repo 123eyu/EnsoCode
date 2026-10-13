@@ -1782,6 +1782,27 @@ describe('群话题', () => {
     expect(services.chats.threadsOf(chatId).map((chat) => chat.id)).toEqual([chatId, thread.id]);
   });
 
+  it('单独删除话题时清理该话题的粘贴文件，根群与其它话题的保留', async () => {
+    const { chatId, services } = await team();
+    const thread = services.chats.createThread(chatId)!;
+    const other = services.chats.createThread(chatId)!;
+    const text = 'x'.repeat(50_000);
+    const save = async (id: string) =>
+      (await call(IPC_CHANNELS.BOT_CHAT_SAVE_PASTED_TEXT, { chatId: id, text })) as {
+        ok: true;
+        path: string;
+      };
+    const [rootFile, threadFile, otherFile] = await Promise.all(
+      [chatId, thread.id, other.id].map(save)
+    );
+    for (const file of [rootFile, threadFile, otherFile]) expect(existsSync(file.path)).toBe(true);
+
+    expect(await call(IPC_CHANNELS.BOT_THREAD_DELETE, { chatId: thread.id })).toEqual({ ok: true });
+    expect(existsSync(threadFile.path)).toBe(false);
+    expect(existsSync(rootFile.path)).toBe(true);
+    expect(existsSync(otherFile.path)).toBe(true);
+  });
+
   it('手机话题：目录声明支持并下发子话题；新建 / 切换复用桌面逻辑、按请求回执', async () => {
     const { alice, bob, chatId, services } = await team();
     const { registerPairBotHandlers } = await import('./pairBots');

@@ -1924,6 +1924,7 @@ export function registerBotHandlers(): void {
       const stopped = await groups.stop(thread.id);
       if (!stopped.ok) return stopped;
       if (!host.discardChat(thread.id)) return INVALID;
+      removePastedTextFiles(sessionDir(), botChatPasteOwner(thread.id));
       if (root.activeThreadId === thread.id)
         chats.update(root.id, (draft) => {
           delete draft.activeThreadId;
