@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { normalizeAutoRetryLimit } from '@shared/autoRetry';
 import {
   type AgentTypeKey,
   type AgentTypeRegistrySnapshot,
@@ -324,6 +325,7 @@ export function startAgentWorker(): void {
     for (const command of queued) child.postMessage(command);
     pushApprovalReviewer();
     pushMaxActiveCoworkers();
+    pushAutoRetryLimit();
     pushDisabledWorkflowPresets();
     pushModelDirectory();
     pushWebSearchConfig();
@@ -1842,6 +1844,14 @@ export function pushMaxActiveCoworkers(): void {
   worker.postMessage({
     type: 'set-max-active-coworkers',
     limit: normalizeMaxActiveCoworkers(readSettingsState()?.maxActiveCoworkers),
+  } satisfies AgentCommand);
+}
+
+export function pushAutoRetryLimit(): void {
+  if (!worker || !workerReady) return;
+  worker.postMessage({
+    type: 'set-auto-retry-limit',
+    limit: normalizeAutoRetryLimit(readSettingsState()?.autoRetryLimit),
   } satisfies AgentCommand);
 }
 

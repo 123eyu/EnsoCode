@@ -1,3 +1,4 @@
+import { parseAutoRetryLimit } from '../autoRetry';
 import {
   type AgentTypeKey,
   type ChildSessionIdentity,
@@ -1236,6 +1237,8 @@ export type AgentCommand =
     }
   | { type: 'set-approval-reviewer'; model?: SpawnModelConfig }
   | { type: 'set-max-active-coworkers'; limit: number }
+  /** 自动重试次数：0 关闭，-1 无限 */
+  | { type: 'set-auto-retry-limit'; limit: number }
   /** 设置里禁用的内置预设：worker 执行与工具说明都按它过滤 */
   | { type: 'set-disabled-workflow-presets'; ids: string[] }
   | { type: 'set-web-search-config'; chain: WebSearchChainEntry[]; configured?: boolean }
@@ -1676,6 +1679,7 @@ export type AgentWorkerEvent =
       identity: SessionIdentity;
       seq: number;
       attempt: number;
+      /** 0 表示无限重试 */
       maxAttempts: number;
       delayMs: number;
       error: string;
@@ -3288,6 +3292,10 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
       return hasExactKeys(value, ['type', 'limit']) && parseMaxActiveCoworkers(value.limit) !== null
         ? (value as unknown as AgentCommand)
         : null;
+    case 'set-auto-retry-limit':
+      return hasExactKeys(value, ['type', 'limit']) && parseAutoRetryLimit(value.limit) !== null
+        ? (value as unknown as AgentCommand)
+        : null;
     case 'set-web-search-config':
       return hasOnlyKeys(value, ['type', 'chain', 'configured']) &&
         (value.configured === undefined || typeof value.configured === 'boolean') &&
@@ -3752,7 +3760,7 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
       return Number.isInteger(value.attempt) &&
         (value.attempt as number) >= 1 &&
         Number.isInteger(value.maxAttempts) &&
-        (value.maxAttempts as number) >= 1 &&
+        (value.maxAttempts as number) >= 0 &&
         isSequence(value.delayMs) &&
         isNonEmptyString(value.error)
         ? (value as unknown as AgentWorkerEvent)

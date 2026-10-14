@@ -19,6 +19,7 @@ import {
   type ResourceDiagnostic,
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
+import { autoRetryOverrides, DEFAULT_AUTO_RETRY_LIMIT } from '@shared/autoRetry';
 import {
   type ChildSessionIdentity,
   ENSO_LOCKED_PROFILE,
@@ -809,6 +810,7 @@ export class SessionSupervisor {
   private readonly evictionTimer: ReturnType<typeof setInterval>;
   private approvalReviewer: SpawnModelConfig | undefined;
   private maxActiveCoworkers = DEFAULT_MAX_ACTIVE_COWORKERS;
+  private autoRetryLimit = DEFAULT_AUTO_RETRY_LIMIT;
   private disabledWorkflowPresets: string[] = [];
   /** undefined 跟随会话；空数组表示已配置但全部不可用，直接走 Exa。 */
   private webSearchChain: readonly WebSearchChainEntry[] | undefined;
@@ -1162,6 +1164,10 @@ export class SessionSupervisor {
     }
     if (command.type === 'set-max-active-coworkers') {
       this.maxActiveCoworkers = command.limit;
+      return;
+    }
+    if (command.type === 'set-auto-retry-limit') {
+      this.autoRetryLimit = command.limit;
       return;
     }
     if (command.type === 'set-disabled-workflow-presets') {
@@ -2706,6 +2712,15 @@ export class SessionSupervisor {
     );
   }
 
+  /** pi 的 save()/reload() 会重算 settings 冲掉 applyOverrides，故包住实例读取口，每次取当前上限 */
+  private bindAutoRetryLimit(session: AgentSession): void {
+    const settings = session.settingsManager as AgentSession['settingsManager'] | undefined;
+    if (!settings) return;
+    const base = settings.getRetrySettings.bind(settings);
+    settings.getRetrySettings = () => ({ ...base(), ...autoRetryOverrides(this.autoRetryLimit) });
+    settings.getRetryEnabled = () => autoRetryOverrides(this.autoRetryLimit).enabled;
+  }
+
   private registerManagedSession(
     identity: SessionIdentity,
     session: AgentSession,
@@ -2774,6 +2789,7 @@ export class SessionSupervisor {
       this.onSessionEvent(managed, event);
     });
     this.sessions.set(identity.sessionId, managed);
+    this.bindAutoRetryLimit(session);
     const stream = session.agent?.streamFunction;
     if (stream) {
       session.agent.streamFunction = (model, context, options) =>
@@ -3409,7 +3425,7 @@ export class SessionSupervisor {
           identity: managed.identity,
           seq: ++managed.seq,
           attempt: event.attempt,
-          maxAttempts: event.maxAttempts,
+          maxAttempts: Number.isFinite(event.maxAttempts) ? event.maxAttempts : 0,
           delayMs: event.delayMs,
           error: event.errorMessage || 'Unknown error',
         });

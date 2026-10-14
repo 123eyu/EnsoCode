@@ -678,6 +678,17 @@ describe('parent/child commands', () => {
     expect(parseAgentCommand({ type: 'set-max-active-coworkers' })).toBeNull();
   });
 
+  it('set-auto-retry-limit 接受 -1（无限）到 100 的整数', () => {
+    expect(parseAgentCommand({ type: 'set-auto-retry-limit', limit: -1 })).toEqual({
+      type: 'set-auto-retry-limit',
+      limit: -1,
+    });
+    expect(parseAgentCommand({ type: 'set-auto-retry-limit', limit: 0 })).not.toBeNull();
+    expect(parseAgentCommand({ type: 'set-auto-retry-limit', limit: 101 })).toBeNull();
+    expect(parseAgentCommand({ type: 'set-auto-retry-limit', limit: 1.5 })).toBeNull();
+    expect(parseAgentCommand({ type: 'set-auto-retry-limit' })).toBeNull();
+  });
+
   it('set-disabled-workflow-presets 只接受合法 id 数组', () => {
     expect(
       parseAgentCommand({ type: 'set-disabled-workflow-presets', ids: ['parallel-review'] })
@@ -1738,6 +1749,11 @@ describe('generation lifecycle/events', () => {
     expect(parseAgentWorkerEvent(retry)).toEqual(retry);
     expect(parseAgentWorkerEvent({ ...retry, attempt: 0 })).toBeNull();
     expect(parseAgentWorkerEvent({ ...retry, maxAttempts: '3' })).toBeNull();
+    expect(parseAgentWorkerEvent({ ...retry, maxAttempts: 0 })).toEqual({
+      ...retry,
+      maxAttempts: 0,
+    });
+    expect(parseAgentWorkerEvent({ ...retry, maxAttempts: -1 })).toBeNull();
     expect(parseAgentWorkerEvent({ ...retry, delayMs: -1 })).toBeNull();
     expect(parseAgentWorkerEvent({ ...retry, error: '' })).toBeNull();
     const { error: _dropped, ...withoutError } = retry;
