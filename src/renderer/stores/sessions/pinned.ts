@@ -43,12 +43,14 @@ export function lastActiveAt(conversation: SidebarConversation): number {
   );
 }
 
-/** 按最后活跃时间倒序;时间相同保持传入顺序(sort 稳定) */
-export function sortProjectsByActivity<T extends { id: string }>(
-  projects: readonly T[],
+/** 「最近」只收这个窗口内有过未归档会话的项目，不是全部项目的另一种排序 */
+export const RECENT_PROJECT_WINDOW_DAYS = 7;
+export const RECENT_PROJECT_WINDOW_MS = RECENT_PROJECT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+function latestActivityByProject(
   order: readonly string[],
   conversations: Conversations
-): T[] {
+): Map<string, number> {
   const activity = new Map<string, number>();
   for (const id of order) {
     const conversation = conversations[id];
@@ -58,7 +60,41 @@ export function sortProjectsByActivity<T extends { id: string }>(
       Math.max(activity.get(conversation.projectId) ?? 0, lastActiveAt(conversation))
     );
   }
+  return activity;
+}
+
+function byLatestActivity<T extends { id: string }>(
+  projects: readonly T[],
+  activity: ReadonlyMap<string, number>
+): T[] {
   return [...projects].sort((a, b) => (activity.get(b.id) ?? 0) - (activity.get(a.id) ?? 0));
+}
+
+/** 按最后活跃时间倒序;时间相同保持传入顺序(sort 稳定) */
+export function sortProjectsByActivity<T extends { id: string }>(
+  projects: readonly T[],
+  order: readonly string[],
+  conversations: Conversations
+): T[] {
+  return byLatestActivity(projects, latestActivityByProject(order, conversations));
+}
+
+/** 最近视图：未归档、且最新会话落在窗口内；没有会话或更早的项目不显示 */
+export function recentProjects<T extends { id: string }>(
+  projects: readonly T[],
+  order: readonly string[],
+  conversations: Conversations,
+  now: number
+): T[] {
+  const activity = latestActivityByProject(order, conversations);
+  const cutoff = now - RECENT_PROJECT_WINDOW_MS;
+  return byLatestActivity(
+    projects.filter((project) => {
+      const at = activity.get(project.id);
+      return at !== undefined && at >= cutoff;
+    }),
+    activity
+  );
 }
 
 function sortByActivity(ids: string[], conversations: Conversations): string[] {
