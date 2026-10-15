@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -70,7 +71,7 @@ import { registerFilesWorkspaceHandlers } from './filesWorkspace';
 
 let root = '';
 beforeEach(() => {
-  root = mkdtempSync(path.join(os.tmpdir(), 'files-ipc-'));
+  root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'files-ipc-')));
   mocks.project = { kind: 'local', state: 'active', canonicalPath: root, sshHost: 'host' };
   mocks.conversation = { projectId: 'project', lifecycle: 'active' };
   mocks.exec.mockReset();

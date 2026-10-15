@@ -1,6 +1,14 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -56,7 +64,7 @@ vi.mock('electron', () => ({
 let root: string;
 let dependencies: WorkspaceFileOpeningDependencies;
 beforeEach(() => {
-  root = mkdtempSync(path.join(os.tmpdir(), 'workspace-opening-'));
+  root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'workspace-opening-')));
   dependencies = {
     platform: 'win32',
     openPath: vi.fn(async () => ''),
