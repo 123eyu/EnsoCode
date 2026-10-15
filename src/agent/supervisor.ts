@@ -109,6 +109,7 @@ import {
 } from './backgroundTasks';
 import { CheckpointManager, withCheckpoint } from './checkpoint/manager';
 import { createRemoteCheckpointHost } from './checkpoint/remoteHost';
+import { appendSystemPromptExtension, SUBAGENT_CONTRACT_PROMPT } from './childContract';
 import {
   type ChildThinkingLevel,
   pickChildReasoningOverride,
@@ -435,6 +436,8 @@ function createSessionResourceLoader(options: {
   smartCompactMode?: SmartCompactMode;
   /** 仅普通 parent：替换 pi 默认提示词开头的角色段落；会强制整段提示词，故排在扩展最后。 */
   persona?: string;
+  /** 仅子会话：追加子代理行为合同到系统提示词（进 system prompt 才不会随压缩丢失） */
+  childContract?: boolean;
 }): DefaultResourceLoader {
   const harness = options.loadHarnessAssets && !options.remoteAgentsFiles;
   const skillPaths = harness
@@ -523,6 +526,9 @@ function createSessionResourceLoader(options: {
           ]
         : []),
       options.silentTurnRecovery,
+      ...(options.childContract
+        ? [appendSystemPromptExtension('subagent-contract', SUBAGENT_CONTRACT_PROMPT)]
+        : []),
       ...(persona
         ? [
             {
@@ -2361,6 +2367,7 @@ export class SessionSupervisor {
               },
               ...(childExploreFold ? { exploreFold: childExploreFold } : {}),
               codemode: childCodemode.extension,
+              childContract: true,
             });
         await subLoader.reload();
         const safeJournal =
