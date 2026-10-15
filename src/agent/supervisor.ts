@@ -372,6 +372,34 @@ interface ManagedSession {
   unsubscribe: () => void;
 }
 
+/** ManagedSession 上所有带 pendingCount 的能力字段 */
+type PendingCounterKey = {
+  [K in keyof ManagedSession]-?: NonNullable<ManagedSession[K]> extends {
+    readonly pendingCount: number;
+  }
+    ? K
+    : never;
+}[keyof ManagedSession];
+
+/**
+ * 挂起判定的探针登记表：新增带 pendingCount 的能力而不登记会编译失败，
+ * 不再靠驱逐 / 工作区锁两处手工清单各自记得补（曾漏 memory、delegation）。
+ */
+const PENDING_COUNTERS: Record<PendingCounterKey, true> = {
+  ensoApp: true,
+  browser: true,
+  memory: true,
+  delegation: true,
+  agentControl: true,
+  computer: true,
+};
+
+export function hasPendingCalls(managed: ManagedSession): boolean {
+  return (Object.keys(PENDING_COUNTERS) as PendingCounterKey[]).some(
+    (key) => (managed[key]?.pendingCount ?? 0) > 0
+  );
+}
+
 export interface SupervisorOptions {
   emit(event: AgentWorkerEvent): void;
   /** pi 全局目录（auth/models/settings），指到 app userData 下以隔离用户的 ~/.pi */
@@ -947,13 +975,9 @@ export class SessionSupervisor {
         managed.currentTurnId !== undefined ||
         managed.gate.snapshot().length > 0 ||
         managed.asks.snapshot().length > 0 ||
-        (managed.ensoApp?.pendingCount ?? 0) > 0 ||
-        (managed.browser?.pendingCount ?? 0) > 0 ||
-        (managed.memory?.pendingCount ?? 0) > 0 ||
-        (managed.agentControl?.pendingCount ?? 0) > 0 ||
+        hasPendingCalls(managed) ||
         (managed.workflowRuns?.size ?? 0) > 0 ||
         managed.pendingTaskReminders.length > 0 ||
-        (managed.computer?.pendingCount ?? 0) > 0 ||
         this.bgTasks.snapshot(id).some((task) => task.status === 'running'),
       hasChildren:
         managed.coworkers.size > 0 ||
@@ -1064,10 +1088,7 @@ export class SessionSupervisor {
                 this.gate.hasPending(managed.identity.sessionId) ||
                 managed.gate.snapshot().length > 0 ||
                 managed.asks.snapshot().length > 0 ||
-                (managed.ensoApp?.pendingCount ?? 0) > 0 ||
-                (managed.browser?.pendingCount ?? 0) > 0 ||
-                (managed.agentControl?.pendingCount ?? 0) > 0 ||
-                (managed.computer?.pendingCount ?? 0) > 0 ||
+                hasPendingCalls(managed) ||
                 this.bgTasks
                   .snapshot(managed.identity.sessionId)
                   .some((task) => task.status === 'running')
