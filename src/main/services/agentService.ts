@@ -111,7 +111,7 @@ interface RunRecord {
   text?: string;
   value?: unknown;
   error?: string;
-  usageByMessage: Map<number, { input: number; output: number }>;
+  usageByMessage: Map<number, { input: number; output: number; cache: number }>;
   toolCallIds: Set<string>;
   createdAt: number;
   startedAt?: number;
@@ -468,7 +468,10 @@ export class AgentService implements AgentServiceContract {
     const run = this.ownedRun(request.context, request.runId);
     if (!run.ok) return run;
     if (!TERMINAL_RUN_STATUSES.has(run.value.status)) {
-      return failure('invalid-state', 'Run has not reached an immutable result.');
+      return failure(
+        'invalid-state',
+        'Run is still running and has no result yet. You will be notified automatically when it completes — do not poll report or wait to check progress; tell the user it is still running.'
+      );
     }
     run.value.delivered = true;
     return {
@@ -630,9 +633,11 @@ export class AgentService implements AgentServiceContract {
       if (activity) active.activity = activity;
       for (const id of toolCallIdsOf(event.message)) active.toolCallIds.add(id);
       if (event.message.usage) {
+        const usage = event.message.usage;
         active.usageByMessage.set(event.index, {
-          input: event.message.usage.input,
-          output: event.message.usage.output,
+          input: usage.input,
+          output: usage.output,
+          cache: (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0),
         });
       }
       if (before.text !== active.text || before.activity !== JSON.stringify(active.activity)) {
@@ -892,8 +897,10 @@ export class AgentService implements AgentServiceContract {
       body && body.length > NOTIFY_TEXT_LIMIT
         ? `${body.slice(0, NOTIFY_TEXT_LIMIT)}\n[…the subagent's report was cut from ${body.length} to its first ${NOTIFY_TEXT_LIMIT} characters]`
         : body;
-    const usage = this.runUsage(run);
-    const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+    let tokens = 0;
+    for (const usage of run.usageByMessage.values()) {
+      tokens += usage.input + usage.output + usage.cache;
+    }
     return [
       `Subagent "${title}" (agentId ${run.agentId}, runId ${run.runId}) ${run.status} after ${formatElapsed(durationMs)}.`,
       ...(run.requestBudgetStop ? ['因请求预算停止，以下是已有的部分输出。'] : []),

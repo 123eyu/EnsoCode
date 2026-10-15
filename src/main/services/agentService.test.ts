@@ -757,6 +757,16 @@ describe('AgentService wait bounds and completion notify', () => {
     });
   });
 
+  it('report 运行中的 Run：说明仍在运行、会自动通知，不要轮询', async () => {
+    const { service } = setup();
+    const spawned = await service.spawn(spawnRequest());
+    if (!spawned.ok) throw new Error(spawned.error);
+    const reported = await service.report({ context, requestId: 'r', runId: spawned.value.runId });
+    expect(reported).toMatchObject({ ok: false, code: 'invalid-state' });
+    expect(!reported.ok && reported.error).toMatch(/still running/);
+    expect(!reported.ok && reported.error).toMatch(/notified automatically/);
+  });
+
   it('完成通知超长时注明原长度与截断长度', async () => {
     const notify = vi.fn();
     const { service, children } = setup({ notify });
@@ -818,7 +828,7 @@ describe('AgentService wait bounds and completion notify', () => {
       message: {
         role: 'assistant',
         content: [{ type: 'text', text: 'done' }],
-        usage: { input: 150, output: 30 },
+        usage: { input: 150, output: 30, cacheRead: 1000, cacheWrite: 0 },
       } as never,
     });
     clock = 4_500;
@@ -829,7 +839,7 @@ describe('AgentService wait bounds and completion notify', () => {
       turnId: spawned.value.runId,
     });
     expect(notify.mock.calls[0][1]).toContain(
-      '<usage>subagent_tokens: 300\ntool_uses: 2\nduration_ms: 3500</usage>'
+      '<usage>subagent_tokens: 1300\ntool_uses: 2\nduration_ms: 3500</usage>'
     );
   });
 
