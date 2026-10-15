@@ -171,6 +171,7 @@ import { createProjectSettingsManager } from './projectCode';
 import { projectMessage } from './projection';
 import { applyWorkerProxyEnv } from './proxyEnv';
 import { withReadTruncationMeta } from './readTruncation';
+import { enqueueReminder, REMINDER_QUEUE_LIMIT } from './reminderQueue';
 import { withRequestBodyBudget } from './requestBodyBudget';
 import { runWithRequestBodyObserver } from './requestBodyTelemetry';
 import { budgetWrapUpPrompt, RequestBudget } from './requestBudget';
@@ -330,6 +331,8 @@ interface ManagedSession {
   gate: ApprovalGate;
   asks: AskManager;
   pendingTaskReminders: string[];
+  /** 通知队列溢出只报一次 */
+  reminderEvictionReported?: boolean;
   /** 忙碌时收到的手动压缩请求：本轮收束后自动执行（用户选择「排队」而非打断） */
   pendingCompact?: { instructions?: string };
   /**
@@ -892,10 +895,19 @@ export class SessionSupervisor {
         })
         .catch(() => {
           // status 是我们的投影,pi loop 可能仍在收尾拒绝 prompt——退回 pending 待搭车/轮末重投,绝不静默丢
-          managed.pendingTaskReminders.push(text);
+          this.queueReminder(managed, text);
         });
     } else {
-      managed.pendingTaskReminders.push(text);
+      this.queueReminder(managed, text);
+    }
+  }
+
+  private queueReminder(managed: ManagedSession, text: string): void {
+    if (enqueueReminder(managed.pendingTaskReminders, text) && !managed.reminderEvictionReported) {
+      managed.reminderEvictionReported = true;
+      console.warn(
+        `[notify] pending reminders exceeded ${REMINDER_QUEUE_LIMIT}; oldest dropped for ${managed.identity.sessionId}`
+      );
     }
   }
 
