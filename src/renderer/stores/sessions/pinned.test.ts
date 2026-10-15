@@ -500,6 +500,12 @@ describe('activeConversationIds', () => {
       ...conv('p2', 3, 50),
       status: 'failed',
       spawning: false,
+      unread: true,
+    },
+    readFail: {
+      ...conv('p1', 9, 60),
+      status: 'failed',
+      spawning: false,
     },
     idle: {
       ...conv('p1', 4, 80),
@@ -530,9 +536,18 @@ describe('activeConversationIds', () => {
       archived: true,
     },
   };
-  const liveOrder = ['run', 'wait', 'fail', 'idle', 'spawn', 'childParent', 'archivedFail'];
+  const liveOrder = [
+    'run',
+    'wait',
+    'fail',
+    'readFail',
+    'idle',
+    'spawn',
+    'childParent',
+    'archivedFail',
+  ];
 
-  it('只收蓝绿红活跃态(含未读绿点),按最后活跃时间倒序', () => {
+  it('只收蓝绿红活跃态(含未读绿点、未读失败),按最后活跃时间倒序', () => {
     expect(activeConversationIds(liveOrder, live)).toEqual([
       'idle',
       'fail',
@@ -541,6 +556,10 @@ describe('activeConversationIds', () => {
       'spawn',
       'childParent',
     ]);
+  });
+
+  it('已读的失败会话退出活跃栏', () => {
+    expect(activeConversationIds(liveOrder, live)).not.toContain('readFail');
   });
 
   it('归档会话与归档项目不进活跃栏', () => {

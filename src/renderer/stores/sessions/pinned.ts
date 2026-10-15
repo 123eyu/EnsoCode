@@ -134,7 +134,7 @@ export function projectConversationIds(
  * 命中的按其顺序排前,未收录的新置顶按活跃时间追加末尾,失效 id 忽略。
  * 归档的与 order 之外的会话(coworker)不参与。
  */
-/** 蓝/绿/红活跃态:运行、待确认、失败、未读。 */
+/** 蓝/绿/红活跃态:运行、待确认、未读失败、未读。失败查看过即退出(红点仍在项目组里) */
 export function activeConversationIds(
   order: readonly string[],
   conversations: Conversations,
@@ -156,7 +156,8 @@ export function activeConversationIds(
           conversations as Record<string, { status: string; spawning?: boolean } | undefined>
         ),
       });
-      return tone === 'running' || tone === 'waiting' || tone === 'failed' || tone === 'unread';
+      if (tone === 'failed') return conversation.unread === true;
+      return tone === 'running' || tone === 'waiting' || tone === 'unread';
     }),
     conversations
   );
