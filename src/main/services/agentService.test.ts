@@ -88,6 +88,26 @@ describe('AgentService lifecycle', () => {
     expect(result.ok && result.value.agentId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('同一父会话并行 spawn 不互相排队：子会话初始化可同时进行', async () => {
+    const { service, runtime } = setup();
+    const original = runtime.spawn;
+    const releases: Array<() => void> = [];
+    const spawn = vi.fn(
+      (input: Parameters<AgentServiceRuntime['spawn']>[0]) =>
+        new Promise<ChildSessionIdentity>((resolve) => {
+          releases.push(() => resolve(original(input)));
+        })
+    );
+    runtime.spawn = spawn;
+    const first = service.spawn(spawnRequest());
+    const second = service.spawn(spawnRequest({ requestId: 'request-2' }));
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
+    for (const release of releases) release();
+    const results = await Promise.all([first, second]);
+    expect(results.map((result) => result.ok)).toEqual([true, true]);
+    expect(new Set(results.map((result) => result.ok && result.value.agentId)).size).toBe(2);
+  });
+
   it('spawn 默认 task + 异步，Agent 与 Run 使用独立稳定身份', async () => {
     const { service, runtime } = setup();
     const result = await service.spawn(spawnRequest());

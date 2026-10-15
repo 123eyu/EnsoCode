@@ -258,65 +258,64 @@ export class AgentService implements AgentServiceContract {
     return true;
   }
 
-  spawn(request: AgentControlSpawnRequest): Promise<AgentServiceResult<AgentSpawnReceipt>> {
-    return this.serial(request.context.owner.ownerId, async () => {
-      const invalid = this.validateContext<AgentSpawnReceipt>(request.context);
-      if (invalid) return invalid;
-      const mode = request.mode ?? 'task';
-      if (!this.allowedModes(request.context).has(mode)) {
-        return failure('mode-disabled', `Agent mode is disabled: ${mode}`);
-      }
-      if (!request.requestId || !request.description.trim() || !request.prompt.trim()) {
-        return failure('invalid-state', 'requestId, description and prompt are required.');
-      }
-      const reservationId = this.randomUuid();
-      const runId = this.randomUuid();
-      let identity: ChildSessionIdentity;
-      try {
-        identity = await this.options.runtime.spawn({
-          context: request.context,
-          agentId: reservationId,
-          mode,
-          ...(request.name?.trim() ? { name: request.name.trim() } : {}),
-          description: request.description,
-          ...(request.agentType ? { agentType: request.agentType } : {}),
-          ...(request.model ? { model: request.model } : {}),
-          ...(request.thinking ? { thinking: request.thinking } : {}),
-        });
-      } catch (error) {
-        return failure(
-          'runtime-unavailable',
-          error instanceof Error ? error.message : String(error)
-        );
-      }
-      // Main 重启后只能按 instanceId 认领 coworker；以它为 agentId，模型手里的 id 才不会失效。
-      // spawn 途中 child-ready 已按同一个键 adopt 过的记录在这里被覆盖，不会留下第二条
-      const agentId = identity.instanceId;
-      const agent: AgentRecord = {
+  /**
+   * 不走 owner 串行：新 Agent 在返回前对其他操作不可见，身份预留与容量校验在 sessionIndex.reserveChild
+   * 同步完成。并行 spawn 因此不再互相等待对方的子会话初始化（含 MCP 建连）。
+   */
+  async spawn(request: AgentControlSpawnRequest): Promise<AgentServiceResult<AgentSpawnReceipt>> {
+    const invalid = this.validateContext<AgentSpawnReceipt>(request.context);
+    if (invalid) return invalid;
+    const mode = request.mode ?? 'task';
+    if (!this.allowedModes(request.context).has(mode)) {
+      return failure('mode-disabled', `Agent mode is disabled: ${mode}`);
+    }
+    if (!request.requestId || !request.description.trim() || !request.prompt.trim()) {
+      return failure('invalid-state', 'requestId, description and prompt are required.');
+    }
+    const reservationId = this.randomUuid();
+    const runId = this.randomUuid();
+    let identity: ChildSessionIdentity;
+    try {
+      identity = await this.options.runtime.spawn({
         context: request.context,
-        agentId,
+        agentId: reservationId,
         mode,
+        ...(request.name?.trim() ? { name: request.name.trim() } : {}),
+        description: request.description,
+        ...(request.agentType ? { agentType: request.agentType } : {}),
+        ...(request.model ? { model: request.model } : {}),
+        ...(request.thinking ? { thinking: request.thinking } : {}),
+      });
+    } catch (error) {
+      return failure('runtime-unavailable', error instanceof Error ? error.message : String(error));
+    }
+    // Main 重启后只能按 instanceId 认领 coworker；以它为 agentId，模型手里的 id 才不会失效。
+    // spawn 途中 child-ready 已按同一个键 adopt 过的记录在这里被覆盖，不会留下第二条
+    const agentId = identity.instanceId;
+    const agent: AgentRecord = {
+      context: request.context,
+      agentId,
+      mode,
+      identity,
+      status: 'ready',
+      queuedRunIds: [],
+      title: request.name?.trim() || request.description,
+    };
+    const run = this.createRun(agent, runId, request.prompt, request.schema, request.gate);
+    this.agents.set(agentId, agent);
+    this.runs.set(runId, run);
+    const started = await this.startRun(agent, run, true);
+    if (!started.ok) {
+      this.agents.delete(agentId);
+      this.runs.delete(runId);
+      await this.options.runtime.dismiss({
+        context: request.context,
         identity,
-        status: 'ready',
-        queuedRunIds: [],
-        title: request.name?.trim() || request.description,
-      };
-      const run = this.createRun(agent, runId, request.prompt, request.schema, request.gate);
-      this.agents.set(agentId, agent);
-      this.runs.set(runId, run);
-      const started = await this.startRun(agent, run, true);
-      if (!started.ok) {
-        this.agents.delete(agentId);
-        this.runs.delete(runId);
-        await this.options.runtime.dismiss({
-          context: request.context,
-          identity,
-          agentId,
-        });
-        return started;
-      }
-      return { ok: true, value: { agentId, runId, mode, status: 'running' } };
-    });
+        agentId,
+      });
+      return started;
+    }
+    return { ok: true, value: { agentId, runId, mode, status: 'running' } };
   }
 
   send(request: AgentControlSendRequest): Promise<AgentServiceResult<AgentSendReceipt>> {
