@@ -112,6 +112,7 @@ interface RunRecord {
   value?: unknown;
   error?: string;
   usageByMessage: Map<number, { input: number; output: number }>;
+  toolCallIds: Set<string>;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -197,6 +198,14 @@ function projectedActivity(message: unknown): AgentRunActivity | undefined {
 }
 
 const NOTIFY_TEXT_LIMIT = 1_500;
+
+function toolCallIdsOf(message: unknown): string[] {
+  const value = message as { role?: unknown; content?: unknown } | undefined;
+  if (value?.role !== 'assistant' || !Array.isArray(value.content)) return [];
+  return value.content.flatMap((part) =>
+    part && part.type === 'toolCall' && typeof part.id === 'string' ? [part.id] : []
+  );
+}
 
 const formatElapsed = (ms: number): string => {
   const seconds = Math.round(ms / 1000);
@@ -614,6 +623,7 @@ export class AgentService implements AgentServiceContract {
       if (text !== undefined) active.text = text;
       const activity = projectedActivity(event.message);
       if (activity) active.activity = activity;
+      for (const id of toolCallIdsOf(event.message)) active.toolCallIds.add(id);
       if (event.message.usage) {
         active.usageByMessage.set(event.index, {
           input: event.message.usage.input,
@@ -739,6 +749,7 @@ export class AgentService implements AgentServiceContract {
       ...(gate !== undefined ? { gate } : {}),
       createdAt: this.now(),
       usageByMessage: new Map(),
+      toolCallIds: new Set(),
       delivered: false,
     };
   }
@@ -864,19 +875,25 @@ export class AgentService implements AgentServiceContract {
 
   private completionText(run: RunRecord): string {
     const title = this.agents.get(run.agentId)?.title ?? run.agentId;
-    const elapsed = formatElapsed(
-      (run.finishedAt ?? this.now()) - (run.startedAt ?? run.createdAt)
-    );
+    const durationMs = (run.finishedAt ?? this.now()) - (run.startedAt ?? run.createdAt);
     const body = run.status === 'succeeded' ? run.text?.trim() : run.error;
+    // 截断要可感知：模型得知道被裁了多少，才会去 report 拿全文
     const excerpt =
       body && body.length > NOTIFY_TEXT_LIMIT
-        ? `${body.slice(0, NOTIFY_TEXT_LIMIT)}\n…(truncated)`
+        ? `${body.slice(0, NOTIFY_TEXT_LIMIT)}\n[…the subagent's report was cut from ${body.length} to its first ${NOTIFY_TEXT_LIMIT} characters]`
         : body;
+    const usage = this.runUsage(run);
+    const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
     return [
-      `Subagent "${title}" (agentId ${run.agentId}, runId ${run.runId}) ${run.status} after ${elapsed}.`,
+      `Subagent "${title}" (agentId ${run.agentId}, runId ${run.runId}) ${run.status} after ${formatElapsed(durationMs)}.`,
       ...(run.requestBudgetStop ? ['因请求预算停止，以下是已有的部分输出。'] : []),
       ...(excerpt ? [excerpt] : []),
-      `Use subagent report with runId ${run.runId} for the full result.`,
+      `<usage>subagent_tokens: ${tokens}\ntool_uses: ${run.toolCallIds.size}\nduration_ms: ${durationMs}</usage>`,
+      `Use subagent report with runId ${run.runId} for the full result.${
+        run.mode === 'coworker'
+          ? ` To continue this coworker, use subagent send with agentId ${run.agentId}.`
+          : ''
+      }`,
     ].join('\n');
   }
 

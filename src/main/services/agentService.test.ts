@@ -737,6 +737,82 @@ describe('AgentService wait bounds and completion notify', () => {
     });
   });
 
+  it('完成通知超长时注明原长度与截断长度', async () => {
+    const notify = vi.fn();
+    const { service, children } = setup({ notify });
+    const spawned = await service.spawn(spawnRequest());
+    if (!spawned.ok) throw new Error(spawned.error);
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 1,
+      index: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(4000) }] },
+    });
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 2,
+      turnId: spawned.value.runId,
+    });
+    const text = notify.mock.calls[0][1] as string;
+    expect(text).toContain('cut from 4000 to its first 1500 characters');
+    expect(text).not.toContain('x'.repeat(1501));
+  });
+
+  it('完成通知附 usage：token 合计、工具调用数与耗时', async () => {
+    const notify = vi.fn();
+    let clock = 1_000;
+    const { service, children } = setup({ notify, now: () => clock });
+    const spawned = await service.spawn(spawnRequest());
+    if (!spawned.ok) throw new Error(spawned.error);
+    const toolCall = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: {} });
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 1,
+      index: 1,
+      message: {
+        role: 'assistant',
+        content: [toolCall('t1'), toolCall('t2')],
+        usage: { input: 100, output: 20 },
+      } as never,
+    });
+    // 同一条消息流式重发不重复计数
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 2,
+      index: 1,
+      message: {
+        role: 'assistant',
+        content: [toolCall('t1'), toolCall('t2')],
+        usage: { input: 100, output: 20 },
+      } as never,
+    });
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 3,
+      index: 3,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'done' }],
+        usage: { input: 150, output: 30 },
+      } as never,
+    });
+    clock = 4_500;
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 4,
+      turnId: spawned.value.runId,
+    });
+    expect(notify.mock.calls[0][1]).toContain(
+      '<usage>subagent_tokens: 300\ntool_uses: 2\nduration_ms: 3500</usage>'
+    );
+  });
+
   it('失败的 Run 通知为紧急；模型自己 stop 的不通知', async () => {
     const notify = vi.fn();
     const { service, children } = setup({ notify });
