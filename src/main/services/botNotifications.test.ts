@@ -16,8 +16,8 @@ vi.mock('electron', () => ({
     static isSupported() {
       return true;
     }
-    on(_event: string, cb: () => void) {
-      env.click = cb;
+    on(name: string, cb: () => void) {
+      if (name === 'click') env.click = cb;
     }
     show() {
       env.show();

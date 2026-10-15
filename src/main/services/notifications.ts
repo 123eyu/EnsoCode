@@ -9,6 +9,10 @@ import { ApprovalNotificationGate } from './approvalNotificationGate';
 
 const approvalNotifications = new ApprovalNotificationGate();
 
+/** 持有已弹出的通知：对象被 GC 后 macOS 点击只会激活 app，不再触发 click */
+const liveNotifications = new Set<Notification>();
+const MAX_LIVE_NOTIFICATIONS = 100;
+
 // 文案本地内联：main 段引入 @shared/i18n 会触发 rollup 多入口 chunk 异常
 // （index.js 被打成 0 字节空产物），故不走共享 i18n
 const TEXTS = {
@@ -82,7 +86,16 @@ function notify(
   }
   if (!Notification.isSupported()) return;
   const notification = new Notification({ title, body, silent: false });
-  notification.on('click', onClick);
+  const release = () => liveNotifications.delete(notification);
+  notification.on('click', () => {
+    release();
+    onClick();
+  });
+  notification.on('close', release);
+  liveNotifications.add(notification);
+  if (liveNotifications.size > MAX_LIVE_NOTIFICATIONS) {
+    liveNotifications.delete(liveNotifications.values().next().value as Notification);
+  }
   notification.show();
 }
 
