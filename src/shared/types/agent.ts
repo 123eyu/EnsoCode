@@ -1878,6 +1878,13 @@ export type AgentWorkerEvent =
       exitCode?: number;
     }
   | {
+      /** 该会话后台任务全量快照（REPLACE 语义）：消费者整体替换，edge 事件丢了也能收敛 */
+      type: 'background-tasks-level';
+      identity: SessionIdentity;
+      seq: number;
+      tasks: BackgroundTaskInfo[];
+    }
+  | {
       type: 'session-custom-entry';
       identity: SessionIdentity;
       seq: number;
@@ -3871,6 +3878,11 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
     case 'task-output':
     case 'task-ended':
       return isNonEmptyString(value.taskId) ? (value as unknown as AgentWorkerEvent) : null;
+    case 'background-tasks-level':
+      return Array.isArray(value.tasks) &&
+        value.tasks.every((task) => isRecord(task) && isNonEmptyString(task.taskId))
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
     case 'session-custom-entry':
       return parseAgentSessionCustomEntry(value.entry)
         ? (value as unknown as AgentWorkerEvent)

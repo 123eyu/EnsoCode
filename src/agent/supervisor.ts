@@ -961,6 +961,17 @@ export class SessionSupervisor {
             });
           }
         },
+        onLevel: (sessionId, tasks) => {
+          const managed = this.sessions.get(sessionId);
+          if (managed) {
+            this.options.emit({
+              type: 'background-tasks-level',
+              identity: managed.identity,
+              seq: ++managed.seq,
+              tasks,
+            });
+          }
+        },
         // 完成通知走合并投递:多任务同时完成合并成一条,失败在 manager 文本里自带标注
         onCompletionNotify: (sessionId, text) => {
           this.notifier.notify(sessionId, text);
