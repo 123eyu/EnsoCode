@@ -2211,6 +2211,13 @@ export class SessionSupervisor {
         resumeFile: childResume,
         extraTools = [],
       }) => {
+        const isLockedEnso = resolved?.tools === 'enso-locked';
+        const selectedMcp = resolved?.mcpServers ?? agentType?.mcpServers ?? [];
+        // 冷连接最长 3s：与模型解析、资源加载并行，不串在首字节前的关键路径最前面
+        const mcpPending =
+          !isLockedEnso && selectedMcp.length > 0
+            ? Promise.all(selectedMcp.map((server) => this.mcp.toolsFor([server], 3000)))
+            : Promise.resolve([]);
         const selectedModel = modelOverride ?? resolved?.model ?? agentType?.model ?? model;
         const base = await resolveSessionModel(runtime, selectedModel);
         // 派发 thinking > 类型预设 > 模型条目预设 > 父会话。
@@ -2226,53 +2233,9 @@ export class SessionSupervisor {
           childReasoning.enabled,
           selectedModel.modelId
         );
-        const isLockedEnso = resolved?.tools === 'enso-locked';
         if (isLockedEnso && (!childIdentity || !askManager)) {
           throw new Error('Locked Enso child requires exact identity and ask manager.');
         }
-        const selectedMcp = resolved?.mcpServers ?? agentType?.mcpServers ?? [];
-        const mcpToolGroups =
-          !isLockedEnso && selectedMcp.length > 0
-            ? await Promise.all(selectedMcp.map((server) => this.mcp.toolsFor([server], 3000)))
-            : [];
-        if (mcpToolGroups.some((tools) => tools.length === 0)) {
-          throw new Error('Agent profile MCP resource failed to establish.');
-        }
-        const typeMcpTools = mcpToolGroups
-          .flat()
-          .map((tool) => withApproval(childGate, 'mcp', tool));
-        const ensoApp =
-          isLockedEnso && childIdentity && askManager
-            ? new EnsoAppInvoker(
-                childIdentity,
-                () => this.sessions.get(childIdentity.sessionId)?.currentTurnId,
-                (request) => {
-                  const managed = this.sessions.get(childIdentity.sessionId);
-                  if (
-                    !managed?.childIdentity ||
-                    !isSameChildSessionIdentity(childIdentity, managed.childIdentity)
-                  ) {
-                    throw new Error('Enso child generation is no longer current.');
-                  }
-                  managed.safeJournal?.append({
-                    type: 'enso-operation',
-                    operationId: request.requestId,
-                    capabilityId: request.capabilityId,
-                    toolCallId: request.requestId,
-                    at: Date.now(),
-                  });
-                  this.options.emit({
-                    type: 'capability-invoke',
-                    child: request.child,
-                    seq: ++managed.seq,
-                    turnId: request.turnId,
-                    requestId: request.requestId,
-                    capabilityId: request.capabilityId,
-                    params: request.params,
-                  });
-                }
-              )
-            : undefined;
         const childExploreFold =
           !isLockedEnso && exploreFoldEnabled ? createExploreFoldState() : undefined;
         const typed = Boolean(resolved || agentType);
@@ -2280,49 +2243,6 @@ export class SessionSupervisor {
           codemode: !isLockedEnso && toolEnabled('isolated_sandbox'),
           deferredServers: isLockedEnso || typed ? [] : deferredMcp,
         });
-        const childTools = isLockedEnso
-          ? [createEnsoCapabilitiesTool(), createEnsoAppTool(ensoApp!), createAskTool(askManager!)]
-          : [
-              ...(!toolEnabled(WORKSPACE_WRITE_TOOL_ID) ||
-              resolved?.tools === 'readonly' ||
-              agentType?.tools === 'readonly'
-                ? readOnlyTools(childGate)
-                : buildBaseTools(
-                    childGate,
-                    undefined,
-                    agentType?.writeScope,
-                    childIdentity?.sessionId
-                  )),
-              ...(typed ? typeMcpTools : wrapMcpTools(childGate)),
-              ...(extraTools as Def[]),
-              ...(childExploreFold ? createExploreFoldTools(childExploreFold) : []),
-            ];
-        const childRunaway = new RunawayGuard();
-        const childReminders = new SystemReminderRegistry();
-        const requestBudget = new RequestBudget();
-        // 到软预算时把一次性收尾提示排进下一条工具结果；锁定会话工具不装饰，提示无处可注入
-        if (!isLockedEnso) {
-          childReminders.register('request-budget', () => {
-            const notice = requestBudget.takeNotice();
-            return notice ? [notice] : [];
-          });
-        }
-        const childBudget = new ToolOutputBudget({
-          rootDir: path.join(
-            this.options.sessionDir,
-            'tool-output',
-            childIdentity?.sessionId ?? `${sessionId}-child`
-          ),
-        });
-        const rawSubTools = childTools;
-        const decorateChild = (tools: Def[]) =>
-          decorateSessionTools(tools, {
-            reminders: childReminders,
-            runaway: childRunaway,
-            budget: childBudget,
-          });
-        const subTools = isLockedEnso ? rawSubTools : decorateChild(rawSubTools);
-        childCodemode.bindDeferredTools(deferredMcpLoader(childGate, decorateChild));
         const selectedSkillPaths = resolved?.skillPaths ?? agentType?.skillPaths ?? [];
         const branchContext = this.branchContextExtension(() =>
           [...this.sessions.values()].find((managed) => managed.session === session)
@@ -2369,7 +2289,88 @@ export class SessionSupervisor {
               codemode: childCodemode.extension,
               childContract: true,
             });
-        await subLoader.reload();
+        const [mcpToolGroups] = await Promise.all([mcpPending, subLoader.reload()]);
+        if (mcpToolGroups.some((tools) => tools.length === 0)) {
+          throw new Error('Agent profile MCP resource failed to establish.');
+        }
+        const typeMcpTools = mcpToolGroups
+          .flat()
+          .map((tool) => withApproval(childGate, 'mcp', tool));
+        const ensoApp =
+          isLockedEnso && childIdentity && askManager
+            ? new EnsoAppInvoker(
+                childIdentity,
+                () => this.sessions.get(childIdentity.sessionId)?.currentTurnId,
+                (request) => {
+                  const managed = this.sessions.get(childIdentity.sessionId);
+                  if (
+                    !managed?.childIdentity ||
+                    !isSameChildSessionIdentity(childIdentity, managed.childIdentity)
+                  ) {
+                    throw new Error('Enso child generation is no longer current.');
+                  }
+                  managed.safeJournal?.append({
+                    type: 'enso-operation',
+                    operationId: request.requestId,
+                    capabilityId: request.capabilityId,
+                    toolCallId: request.requestId,
+                    at: Date.now(),
+                  });
+                  this.options.emit({
+                    type: 'capability-invoke',
+                    child: request.child,
+                    seq: ++managed.seq,
+                    turnId: request.turnId,
+                    requestId: request.requestId,
+                    capabilityId: request.capabilityId,
+                    params: request.params,
+                  });
+                }
+              )
+            : undefined;
+        const childTools = isLockedEnso
+          ? [createEnsoCapabilitiesTool(), createEnsoAppTool(ensoApp!), createAskTool(askManager!)]
+          : [
+              ...(!toolEnabled(WORKSPACE_WRITE_TOOL_ID) ||
+              resolved?.tools === 'readonly' ||
+              agentType?.tools === 'readonly'
+                ? readOnlyTools(childGate)
+                : buildBaseTools(
+                    childGate,
+                    undefined,
+                    agentType?.writeScope,
+                    childIdentity?.sessionId
+                  )),
+              ...(typed ? typeMcpTools : wrapMcpTools(childGate)),
+              ...(extraTools as Def[]),
+              ...(childExploreFold ? createExploreFoldTools(childExploreFold) : []),
+            ];
+        const childRunaway = new RunawayGuard();
+        const childReminders = new SystemReminderRegistry();
+        const requestBudget = new RequestBudget();
+        // 到软预算时把一次性收尾提示排进下一条工具结果；锁定会话工具不装饰，提示无处可注入
+        if (!isLockedEnso) {
+          childReminders.register('request-budget', () => {
+            const notice = requestBudget.takeNotice();
+            return notice ? [notice] : [];
+          });
+        }
+        const childBudget = new ToolOutputBudget({
+          rootDir: path.join(
+            this.options.sessionDir,
+            'tool-output',
+            childIdentity?.sessionId ?? `${sessionId}-child`
+          ),
+        });
+        const rawSubTools = childTools;
+        const decorateChild = (tools: Def[]) =>
+          decorateSessionTools(tools, {
+            reminders: childReminders,
+            runaway: childRunaway,
+            budget: childBudget,
+          });
+        const subTools = isLockedEnso ? rawSubTools : decorateChild(rawSubTools);
+        childCodemode.bindDeferredTools(deferredMcpLoader(childGate, decorateChild));
         const safeJournal =
           isLockedEnso && childIdentity
             ? new EnsoSafeJournal(this.options.sessionDir, childIdentity, cwd, childResume)
