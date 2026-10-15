@@ -143,6 +143,7 @@ import { SourceAuthorityRegistry } from '../services/sourceAuthorityRegistry';
 import { setSpeechCorrector } from '../services/speech/service';
 import { buildCorrectionRequest } from '../services/speech/text';
 import { getSshConnectionStore } from '../services/sshConnectionStore';
+import { SubagentProgressPush } from '../services/subagentProgressPush';
 import { titleModelCandidates } from '../services/titleSummary';
 import { ingestSessionJsonl } from '../services/usage/ledgerStore';
 import { sendToAllWindows } from '../windows/createAppWindow';
@@ -275,6 +276,14 @@ export function pushMcpStatus(push: McpStatusPush): void {
     // renderer 已崩但 webContents 对象还在
   }
 }
+
+const subagentProgressPush = new SubagentProgressPush((sessionId, runs) => {
+  try {
+    sendToAllWindows(IPC_CHANNELS.AGENT_SUBAGENT_PROGRESS_CHANGED, { sessionId, runs });
+  } catch {
+    // renderer 已崩但 webContents 对象还在
+  }
+});
 
 function exactIdentity(sessionId: unknown): SessionIdentity | ChildSessionIdentity | undefined {
   return isNonEmptyString(sessionId) ? agentSessionIndex.currentIdentity(sessionId) : undefined;
@@ -953,6 +962,7 @@ export function registerAgentHandlers(): void {
       const identity = rootIdentity(context.owner.ownerId);
       if (identity) sendAgentCommand({ type: 'agent-notify', identity, text, urgent });
     },
+    onProgress: (ownerId, runs) => subagentProgressPush.update(ownerId, runs),
     allowedModes: (context) => {
       const state = readSettingsState() ?? {};
       const projects = Array.isArray(state.projects) ? state.projects : [];

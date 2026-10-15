@@ -850,6 +850,66 @@ describe('AgentService wait bounds and completion notify', () => {
     expect(service.progress('chat-2')).toEqual([]);
   });
 
+  it('onProgress：Run 启动即推全量快照，消息带文本尾巴，结束推空快照', async () => {
+    const onProgress = vi.fn();
+    const { service, children } = setup({ onProgress });
+    const spawned = await service.spawn(spawnRequest({ name: '核对' }));
+    if (!spawned.ok) throw new Error(spawned.error);
+    expect(onProgress).toHaveBeenLastCalledWith('chat-1', [
+      expect.objectContaining({ runId: spawned.value.runId, title: '核对', status: 'running' }),
+    ]);
+    const text = `${'a'.repeat(300)}结论在末尾`;
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 1,
+      index: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+    });
+    const [, runs] = onProgress.mock.calls.at(-1)!;
+    expect(runs[0].text).toHaveLength(160);
+    expect(runs[0].text.endsWith('结论在末尾')).toBe(true);
+    expect(runs[0].activity).toEqual({ phase: 'writing' });
+    const calls = onProgress.mock.calls.length;
+    // 同样的内容重发不推
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 2,
+      index: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+    });
+    expect(onProgress).toHaveBeenCalledTimes(calls);
+    service.observe({
+      type: 'turn-completed',
+      identity: children[0],
+      seq: 3,
+      turnId: spawned.value.runId,
+    });
+    expect(onProgress).toHaveBeenLastCalledWith('chat-1', []);
+  });
+
+  it('wait 超时回执的进度不带文本尾巴，避免模型借进度窥探中途结果', async () => {
+    const { service, children } = setup();
+    const spawned = await service.spawn(spawnRequest());
+    if (!spawned.ok) throw new Error(spawned.error);
+    service.observe({
+      type: 'message-upsert',
+      identity: children[0],
+      seq: 1,
+      index: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: '半成品' }] },
+    });
+    const waited = await service.wait({
+      context,
+      requestId: 'w',
+      runIds: [spawned.value.runId],
+      timeoutMs: 0,
+    });
+    expect(waited.ok && waited.value.pending?.[0]).not.toHaveProperty('text');
+    expect(service.progress('chat-1')[0].text).toBe('半成品');
+  });
+
   it('until:all 等多个 Run：先结束的不单独通知，由 wait 回执一并交付', async () => {
     const notify = vi.fn();
     const { service, children } = setup({ notify });

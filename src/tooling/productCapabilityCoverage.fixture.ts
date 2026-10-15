@@ -510,6 +510,9 @@ export const IPC_PRODUCT_COVERAGE = {
   AGENT_SUBAGENT_PROGRESS: excluded(
     'Read-only progress of running subagents shown in the desktop wait row; renderer-only, not an Enso capability.'
   ),
+  AGENT_SUBAGENT_PROGRESS_CHANGED: excluded(
+    'Main-to-renderer push of running subagent progress snapshots for the desktop wait row.'
+  ),
   AGENT_WORKFLOW_STOP: excluded('Side panel control to stop a running workflow run.'),
   AGENT_SUBAGENT_STOP: excluded(
     'Desktop TaskBar control to abort a stuck or running subagent; renderer-only, not an Enso capability.'

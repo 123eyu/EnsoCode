@@ -137,6 +137,8 @@ export interface AgentServiceOptions {
   allowedModes?: (context: AgentControlContext) => ReadonlySet<AgentMode>;
   /** Run 结束而模型还不知情时通知其父会话 */
   notify?: (context: AgentControlContext, text: string, urgent: boolean) => void;
+  /** 某父会话名下未结束 Run 的进度变化：负载是该 owner 的全量快照（REPLACE 语义） */
+  onProgress?: (ownerId: string, runs: AgentRunProgress[]) => void;
 }
 
 const TERMINAL_RUN_STATUSES: ReadonlySet<AgentRunStatus> = new Set([
@@ -198,6 +200,8 @@ function projectedActivity(message: unknown): AgentRunActivity | undefined {
 }
 
 const NOTIFY_TEXT_LIMIT = 1_500;
+/** 等待行预览只要结论所在的末尾 */
+const PROGRESS_TEXT_TAIL = 160;
 
 function toolCallIdsOf(message: unknown): string[] {
   const value = message as { role?: unknown; content?: unknown } | undefined;
@@ -366,6 +370,7 @@ export class AgentService implements AgentServiceContract {
       this.runs.set(runId, run);
       if (active) {
         agent.value.queuedRunIds.push(runId);
+        this.pushProgress(request.context.owner.ownerId);
         return {
           ok: true,
           value: {
@@ -581,7 +586,7 @@ export class AgentService implements AgentServiceContract {
       .filter(
         (run) => run.context.owner.ownerId === ownerId && !TERMINAL_RUN_STATUSES.has(run.status)
       )
-      .map((run) => this.runProgress(run));
+      .map((run) => this.runProgress(run, true));
   }
 
   observe(event: AgentWorkerEvent | { type: 'worker-exited' }): void {
@@ -619,6 +624,7 @@ export class AgentService implements AgentServiceContract {
     if (!agent) return;
     const active = agent.activeRunId ? this.runs.get(agent.activeRunId) : undefined;
     if (event.type === 'message-upsert' && active) {
+      const before = { text: active.text, activity: JSON.stringify(active.activity) };
       const text = projectedText(event.message);
       if (text !== undefined) active.text = text;
       const activity = projectedActivity(event.message);
@@ -629,6 +635,9 @@ export class AgentService implements AgentServiceContract {
           input: event.message.usage.input,
           output: event.message.usage.output,
         });
+      }
+      if (before.text !== active.text || before.activity !== JSON.stringify(active.activity)) {
+        this.pushProgress(active.context.owner.ownerId);
       }
       return;
     }
@@ -763,6 +772,7 @@ export class AgentService implements AgentServiceContract {
     agent.status = 'active';
     run.status = 'running';
     run.startedAt = this.now();
+    this.pushProgress(agent.context.owner.ownerId);
     const prompted = await this.options.runtime.prompt({
       context: agent.context,
       identity: agent.identity,
@@ -861,6 +871,7 @@ export class AgentService implements AgentServiceContract {
     run.finishedAt = this.now();
     run.activity = undefined;
     if (error !== undefined) run.error = error;
+    this.pushProgress(run.context.owner.ownerId);
     // 在等它的 wait 同步结算并标记已知情；仍有 wait 在等它（until:all）则交给那次回执
     this.flushWaiters();
     this.notifyUndelivered(run);
@@ -955,8 +966,14 @@ export class AgentService implements AgentServiceContract {
     };
   }
 
-  private runProgress(run: RunRecord): AgentRunProgress {
+  private pushProgress(ownerId: string): void {
+    this.options.onProgress?.(ownerId, this.progress(ownerId));
+  }
+
+  /** withText 只给界面；模型的超时回执不带中途文本，结果只随完成通知交付 */
+  private runProgress(run: RunRecord, withText = false): AgentRunProgress {
     const title = this.agents.get(run.agentId)?.title;
+    const text = withText ? run.text?.trim().slice(-PROGRESS_TEXT_TAIL) : undefined;
     return {
       agentId: run.agentId,
       runId: run.runId,
@@ -964,6 +981,7 @@ export class AgentService implements AgentServiceContract {
       status: run.status,
       elapsedMs: Math.max(0, this.now() - (run.startedAt ?? run.createdAt)),
       ...(run.activity ? { activity: run.activity } : {}),
+      ...(text ? { text } : {}),
     };
   }
 

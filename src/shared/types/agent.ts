@@ -518,6 +518,8 @@ export interface AgentRunProgress {
   elapsedMs: number;
   /** 子代理此刻在做的事：在跑的工具或正在写回复 */
   activity?: AgentRunActivity;
+  /** 最近一条回复的末尾（仅界面预览；给模型的回执不带） */
+  text?: string;
 }
 
 export type AgentRunActivity =
