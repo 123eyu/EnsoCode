@@ -238,7 +238,12 @@ export function createUnifiedSubagentTool(deps: UnifiedSubagentDeps): ToolDefini
         },
         agentId: { type: 'string' },
         runId: { type: 'string' },
-        runIds: { type: 'array', items: { type: 'string' }, minItems: 1, uniqueItems: true },
+        runIds: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description: 'Distinct run ids. Duplicates are rejected.',
+        },
         message: { type: 'string' },
         delivery: { type: 'string', enum: ['auto', 'steer', 'next'] },
         expectedRunId: { type: 'string' },
@@ -256,16 +261,6 @@ export function createUnifiedSubagentTool(deps: UnifiedSubagentDeps): ToolDefini
         text: { type: 'string' },
       },
       required: ['operation'],
-      allOf: [
-        {
-          if: {
-            properties: { operation: { const: 'spawn' } },
-            required: ['operation'],
-          },
-          // biome-ignore lint/suspicious/noThenProperty: JSON Schema 的 if/then 关键字
-          then: { required: ['description', 'prompt'] },
-        },
-      ],
       additionalProperties: false,
     } as unknown as ToolDefinition['parameters'],
     prepareArguments: clampWaitTimeout as unknown as ToolDefinition['prepareArguments'],
