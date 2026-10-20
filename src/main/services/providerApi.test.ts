@@ -549,8 +549,8 @@ describe('listModels 集成行为与鉴权兼容', () => {
     const [firstCallUrl, firstCallInit] = fetchMock.mock.calls[0];
     const [secondCallUrl, secondCallInit] = fetchMock.mock.calls[1];
 
-    expect(firstCallUrl).toBe('https://api.anyrouter.top/v1/models');
-    expect(secondCallUrl).toBe('https://api.anyrouter.top/v1/models');
+    expect(firstCallUrl).toBe('https://api.anyrouter.top/v1/models?limit=1000');
+    expect(secondCallUrl).toBe('https://api.anyrouter.top/v1/models?limit=1000');
 
     expect(firstCallInit.headers).toEqual({
       'x-api-key': 'sk-ant-thirdparty',

@@ -83,7 +83,8 @@ export async function listModels(
     let headers: Record<string, string> = {};
     switch (config.api) {
       case 'anthropic-messages':
-        url = `${withVersionSegment(base, 'v1')}/models`;
+        // 官方默认每页 20 条且带 has_more；同步需要完整清单，取单页上限
+        url = `${withVersionSegment(base, 'v1')}/models?limit=1000`;
         headers = { 'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION };
         break;
       case 'google-generative-ai':
