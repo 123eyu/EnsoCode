@@ -27,9 +27,7 @@ export function GitPanelLayout({
         <div
           className={cn(
             'flex min-h-0 min-w-0 flex-col overflow-hidden border-b @min-[720px]/git:h-full @min-[720px]/git:max-h-none @min-[720px]/git:flex-none @min-[720px]/git:border-r @min-[720px]/git:border-b-0',
-            expanded
-              ? 'flex-1 @min-[720px]/git:w-[280px]'
-              : 'shrink-0 @min-[720px]/git:w-8',
+            expanded ? 'flex-1 @min-[720px]/git:w-[280px]' : 'shrink-0 @min-[720px]/git:w-8',
             expanded && hasSelection && 'max-h-[45%] basis-[45%] shrink-0'
           )}
         >
@@ -48,7 +46,9 @@ export function GitPanelLayout({
                 {title}
               </span>
             </button>
-            {expanded && actions && <div className="mr-1 flex shrink-0 items-center">{actions}</div>}
+            {expanded && actions && (
+              <div className="mr-1 flex shrink-0 items-center">{actions}</div>
+            )}
           </div>
           <div
             id={id}

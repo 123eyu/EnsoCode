@@ -159,7 +159,10 @@ async function openFileLinkContext(
     addToast({
       type: 'error',
       title: t('Could not open local file link'),
-      description: revealErrorDescription(error instanceof Error ? error.message : String(error), t),
+      description: revealErrorDescription(
+        error instanceof Error ? error.message : String(error),
+        t
+      ),
     });
   }
 }
@@ -184,8 +187,10 @@ function FileLinkContextMenu({
         {items.map((item) => {
           const name =
             item.target === 'application'
-              ? (item.applicationPath.split(/[/\\]/).at(-1) ?? item.applicationPath)
-                  .replace(/\.(?:exe|app)$/i, '')
+              ? (item.applicationPath.split(/[/\\]/).at(-1) ?? item.applicationPath).replace(
+                  /\.(?:exe|app)$/i,
+                  ''
+                )
               : 'VS Code';
           return (
             <ContextMenuItem

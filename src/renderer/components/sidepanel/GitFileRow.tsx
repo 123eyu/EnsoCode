@@ -52,10 +52,7 @@ export function GitFileRow({
             {directory}
           </span>
         )}
-        <span
-          className={cn('shrink-0 font-mono text-[11px]', status.color)}
-          title={t(file.status)}
-        >
+        <span className={cn('shrink-0 font-mono text-[11px]', status.color)} title={t(file.status)}>
           <span aria-hidden="true">{status.label}</span>
           <span className="sr-only">{t(file.status)}</span>
         </span>

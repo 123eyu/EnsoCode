@@ -13,7 +13,12 @@ describe('文件链接右键打开配置', () => {
     const config = [
       { id: 'vscode', target: 'vscode', enabled: true },
       { id: 'reveal', target: 'reveal', enabled: false },
-      { id: 'editor-1', target: 'application', enabled: true, applicationPath: 'C:/Apps/Editor.exe' },
+      {
+        id: 'editor-1',
+        target: 'application',
+        enabled: true,
+        applicationPath: 'C:/Apps/Editor.exe',
+      },
       { id: 'editor-2', target: 'application', enabled: false, applicationPath: '/bin/editor' },
     ];
     expect(parseContextMenuOpen(config)).toEqual(config);

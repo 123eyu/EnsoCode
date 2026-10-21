@@ -30,8 +30,10 @@ export function ContextMenuOpeningSettings() {
     if (item.target === 'reveal') return t('File manager');
     if (item.target === 'vscode') return t('VS Code');
     return (
-      item.applicationPath.split(/[/\\]/).at(-1)?.replace(/\.(exe|app)$/i, '') ||
       item.applicationPath
+        .split(/[/\\]/)
+        .at(-1)
+        ?.replace(/\.(exe|app)$/i, '') || item.applicationPath
     );
   };
   const enabledNames = items.filter((item) => item.enabled).map(nameOf);
@@ -167,9 +169,9 @@ export function ContextMenuOpeningSettings() {
                     disabled={busy}
                     onClick={() =>
                       setContextMenuOpen(
-                        useSettingsStore.getState().contextMenuOpen.filter(
-                          (entry) => entry.id !== item.id
-                        )
+                        useSettingsStore
+                          .getState()
+                          .contextMenuOpen.filter((entry) => entry.id !== item.id)
                       )
                     }
                   >

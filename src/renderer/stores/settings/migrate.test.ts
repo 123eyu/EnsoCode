@@ -15,7 +15,9 @@ describe('文件链接右键打开设置水合', () => {
     ).toEqual([]);
     expect(mergeSettingsState({ contextMenuOpen: [] }, current).contextMenuOpen).toEqual([]);
     const config = [{ id: 'vscode', target: 'vscode', enabled: false }];
-    expect(mergeSettingsState({ contextMenuOpen: config }, current).contextMenuOpen).toEqual(config);
+    expect(mergeSettingsState({ contextMenuOpen: config }, current).contextMenuOpen).toEqual(
+      config
+    );
   });
 });
 

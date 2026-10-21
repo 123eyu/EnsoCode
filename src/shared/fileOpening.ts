@@ -26,7 +26,9 @@ export function parseContextMenuOpen(value: unknown): ContextMenuOpen | null {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
     const config = item as Record<string, unknown>;
     if (
-      Object.keys(config).some((key) => !['id', 'target', 'enabled', 'applicationPath'].includes(key))
+      Object.keys(config).some(
+        (key) => !['id', 'target', 'enabled', 'applicationPath'].includes(key)
+      )
     )
       return null;
     const { id, enabled, target } = config;
@@ -41,7 +43,11 @@ export function parseContextMenuOpen(value: unknown): ContextMenuOpen | null {
       applications.add(identity);
       items.push({ id, enabled, target, applicationPath });
     } else {
-      if ((target !== 'reveal' && target !== 'vscode') || id !== target || 'applicationPath' in config)
+      if (
+        (target !== 'reveal' && target !== 'vscode') ||
+        id !== target ||
+        'applicationPath' in config
+      )
         return null;
       items.push({ id, enabled, target });
     }

@@ -86,7 +86,10 @@ export function GitFileList({
                   className={cn('size-3 shrink-0 text-muted-foreground', !expanded && '-rotate-90')}
                 />
                 {expanded ? (
-                  <FolderOpen aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+                  <FolderOpen
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
                 ) : (
                   <Folder aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
                 )}

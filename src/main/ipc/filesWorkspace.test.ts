@@ -95,7 +95,13 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 const invoke = (channel: string, request = {}) =>
   mocks.handlers.get(channel)?.(
     {},
-    { conversationId: 'conversation', projectId: 'project', rel: 'file', itemId: 'reveal', ...request }
+    {
+      conversationId: 'conversation',
+      projectId: 'project',
+      rel: 'file',
+      itemId: 'reveal',
+      ...request,
+    }
   );
 it('文件链接右键只采信 Main 配置，身份、远程与边界校验先于本机打开', async () => {
   const abs = path.join(root, 'readme.md');
@@ -137,10 +143,16 @@ it('文件链接右键只采信 Main 配置，身份、远程与边界校验先�
     error: 'invalid-path',
   });
   mocks.project.kind = 'ssh';
-  expect(await invoke(IPC_CHANNELS.FILES_OPEN_CONTEXT)).toEqual({ ok: false, error: 'unsupported' });
+  expect(await invoke(IPC_CHANNELS.FILES_OPEN_CONTEXT)).toEqual({
+    ok: false,
+    error: 'unsupported',
+  });
   mocks.project.kind = 'local';
   mocks.conversation.projectId = 'other';
-  expect(await invoke(IPC_CHANNELS.FILES_OPEN_CONTEXT)).toEqual({ ok: false, error: 'unavailable' });
+  expect(await invoke(IPC_CHANNELS.FILES_OPEN_CONTEXT)).toEqual({
+    ok: false,
+    error: 'unavailable',
+  });
   expect(mocks.showItemInFolder).not.toHaveBeenCalled();
   expect(mocks.openPath).not.toHaveBeenCalled();
 });

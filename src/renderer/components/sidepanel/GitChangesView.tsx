@@ -241,7 +241,11 @@ export function GitChangesView({
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b px-2 py-1">
         {status && !disabled && !unavailable && !readError && (
-          <div className="flex shrink-0 items-center gap-1" role="tablist" aria-label={t('Git views')}>
+          <div
+            className="flex shrink-0 items-center gap-1"
+            role="tablist"
+            aria-label={t('Git views')}
+          >
             <Button
               role="tab"
               aria-selected={view === 'changes'}
@@ -359,7 +363,9 @@ export function GitChangesView({
             <GitPanelLayout
               title={t('Changed files')}
               hasSelection={selected !== null}
-              actions={<GitFileViewToggle tree={tree} onToggle={() => setTree((value) => !value)} />}
+              actions={
+                <GitFileViewToggle tree={tree} onToggle={() => setTree((value) => !value)} />
+              }
               navigation={
                 <>
                   <div className="shrink-0 px-2 pb-1.5">
@@ -449,7 +455,9 @@ export function GitChangesView({
                                       disabled={blocked}
                                       onClick={() =>
                                         void perform(group.staged ? 'Unstage' : 'Stage', () =>
-                                          window.electronAPI.git[group.staged ? 'unstage' : 'stage']({
+                                          window.electronAPI.git[
+                                            group.staged ? 'unstage' : 'stage'
+                                          ]({
                                             ...request,
                                             paths: [file.path],
                                           })
