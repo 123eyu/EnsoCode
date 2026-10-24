@@ -498,7 +498,8 @@ export const zhTranslations: Record<string, string> = {
   Connecting: '连接中',
   'Not authorized': '未授权',
   'Authorized, pending connection': '已授权，待连接',
-  'Authorized. Takes effect in new conversations.': '已授权，新会话生效。',
+  'Authorized. Conversations that already include this server can use it on the next message.':
+    '已授权。已包含该服务器的对话，下一条消息即可使用。',
   'New sessions only': '新会话生效',
   'Open sessions keep the previous setting; it applies once you start a new session.':
     '已打开的会话保持原设置，新建会话后生效。',
