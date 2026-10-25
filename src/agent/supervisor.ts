@@ -2954,10 +2954,14 @@ export class SessionSupervisor {
     if (opts.resumeFile) {
       const raw = this.transcript(managed);
       const { immediate, deferFull } = projectResumeTail(raw);
-      const emitResumeSnapshot = (payload: { messages: ProjectedMessage[]; baseIndex: number }) => {
+      const emitResumeSnapshot = (
+        payload: { messages: ProjectedMessage[]; baseIndex: number },
+        resumeFull = false
+      ) => {
         this.options.emit({
           type: 'snapshot',
           partial: true,
+          ...(resumeFull ? { resumeFull: true } : {}),
           sessions: [
             {
               identity,
@@ -2978,7 +2982,7 @@ export class SessionSupervisor {
           if (this.sessions.get(identity.sessionId) !== managed) return;
           const full = { messages: projectMessages(raw), baseIndex: 0 };
           managed.messages = full.messages;
-          emitResumeSnapshot(full);
+          emitResumeSnapshot(full, true);
         });
       }
       managed.turnStartIndex = managed.messages.length;

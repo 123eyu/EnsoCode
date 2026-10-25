@@ -661,6 +661,9 @@ export const zhTranslations: Record<string, string> = {
   Send: '发送',
   'Create or select a project to start a conversation': '创建或选择一个项目以开始对话',
   'Ask Enso': '询问 Enso',
+  'Compact view': '精简版',
+  'The built-in browser is not available in full view. Check it on the computer.':
+    '完整版暂不支持内置浏览器，请在电脑上查看。',
   'Need help choosing a setup? Ask Enso.': '不确定如何配置？询问 Enso。',
   Locked: '已锁定',
   'Inherits the conversation model and provides product capabilities':
