@@ -1088,6 +1088,7 @@ export function registerAgentHandlers(): void {
       workerEvent.type === 'session-reloaded' ||
       workerEvent.type === 'workspace-lock-result' ||
       workerEvent.type === 'oauth-pool-select' ||
+      workerEvent.type === 'privacy-mask-ledger' ||
       workerEvent.type === 'mcp-oauth-refresh' ||
       workerEvent.type === 'workspace-unlock-result'
     )

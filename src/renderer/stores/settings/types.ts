@@ -6,6 +6,7 @@ import type {
 } from '@shared/defaultModel';
 import type { ContextMenuOpen, FileOpenRule } from '@shared/fileOpening';
 import type { Locale } from '@shared/i18n';
+import type { PrivacyMaskSettings } from '@shared/privacyMask/settings';
 import type { ProxyMode } from '@shared/proxy';
 import type { StatusLineSegmentId } from '@shared/statusLine';
 import type { TerminalShell } from '@shared/terminalShell';
@@ -216,6 +217,8 @@ export interface SettingsState {
   maxActiveCoworkers: number;
   /** 瞬态错误自动重试次数；0 关闭，-1 无限；缺省 3 */
   autoRetryLimit: number;
+  /** 发往模型前的隐私脱敏；缺省关闭，不参与配置同步 */
+  privacyMasking: PrivacyMaskSettings;
   /** SSH 远端单次命令超时（秒）；缺省 30，范围 5–300 */
   sshTimeoutSeconds: number;
   /** 无 token/工具结果超过此时长则中止；0 = 永不；单位分钟 */
@@ -387,6 +390,7 @@ export interface SettingsState {
   setNotifyMainAgentOnly: (value: boolean) => void;
   setMaxActiveCoworkers: (value: number) => void;
   setAutoRetryLimit: (value: number) => void;
+  setPrivacyMasking: (value: PrivacyMaskSettings) => void;
   setSshTimeoutSeconds: (value: number) => void;
   setGenerationStallTimeoutMin: (minutes: number) => void;
   setAutoArchiveIdleDays: (days: number) => void;

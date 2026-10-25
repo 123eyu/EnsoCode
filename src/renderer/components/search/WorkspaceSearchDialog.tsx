@@ -83,6 +83,7 @@ const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = {
   workflows: 'Workflows',
   tools: 'Built-in tools',
   memory: 'Memory',
+  privacy: 'Privacy',
   phone: 'Devices',
   ssh: 'SSH',
   usage: 'Usage',

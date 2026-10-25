@@ -25,6 +25,10 @@ import {
   normalizeMemoryModelIdleMinutes,
 } from '@shared/memory/modelIdle';
 import { directorySectionForAccount, materializeProviders } from '@shared/modelDirectory';
+import {
+  DEFAULT_PRIVACY_MASK_SETTINGS,
+  parsePrivacyMaskSettings,
+} from '@shared/privacyMask/settings';
 import { applyProjectGroupPatch } from '@shared/projectGroups';
 import { projectNameFromPath } from '@shared/projectName';
 import { applyIncomingProviders } from '@shared/providerIdentity';
@@ -197,6 +201,7 @@ const initialState = {
   notifyMainAgentOnly: true,
   maxActiveCoworkers: DEFAULT_MAX_ACTIVE_COWORKERS,
   autoRetryLimit: DEFAULT_AUTO_RETRY_LIMIT,
+  privacyMasking: DEFAULT_PRIVACY_MASK_SETTINGS,
   sshTimeoutSeconds: DEFAULT_SSH_TIMEOUT_SECONDS,
   generationStallTimeoutMin: 0,
   autoArchiveIdleDays: DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,
@@ -382,6 +387,7 @@ export const useSettingsStore = create<SettingsState>()(
       setMaxActiveCoworkers: (value) =>
         set({ maxActiveCoworkers: normalizeMaxActiveCoworkers(value) }),
       setAutoRetryLimit: (value) => set({ autoRetryLimit: normalizeAutoRetryLimit(value) }),
+      setPrivacyMasking: (value) => set({ privacyMasking: parsePrivacyMaskSettings(value) }),
       setSshTimeoutSeconds: (value) =>
         set({ sshTimeoutSeconds: normalizeSshTimeoutSeconds(value) }),
       setGenerationStallTimeoutMin: (minutes) =>
@@ -1132,6 +1138,10 @@ export const useSettingsStore = create<SettingsState>()(
         const autoRetryLimit = normalizeAutoRetryLimit(s.autoRetryLimit);
         if (autoRetryLimit !== s.autoRetryLimit) {
           useSettingsStore.setState({ autoRetryLimit });
+        }
+        const privacyMasking = parsePrivacyMaskSettings(s.privacyMasking);
+        if (JSON.stringify(privacyMasking) !== JSON.stringify(s.privacyMasking)) {
+          useSettingsStore.setState({ privacyMasking });
         }
         const botMaxRunningTurns = normalizeBotMaxRunningTurns(s.botMaxRunningTurns);
         if (botMaxRunningTurns !== s.botMaxRunningTurns) {

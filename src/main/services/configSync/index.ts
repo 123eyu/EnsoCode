@@ -125,6 +125,10 @@ export const CONFIG_SYNC_FIELD_POLICY = {
   notifyMainAgentOnly: { mode: 'portable' },
   maxActiveCoworkers: { mode: 'portable' },
   autoRetryLimit: { mode: 'portable' },
+  privacyMasking: {
+    mode: 'excluded',
+    reason: 'custom words and allow list may themselves be sensitive',
+  },
   generationStallTimeoutMin: { mode: 'portable' },
   autoArchiveIdleDays: { mode: 'portable' },
   autoArchiveMergedWorktrees: { mode: 'portable' },
