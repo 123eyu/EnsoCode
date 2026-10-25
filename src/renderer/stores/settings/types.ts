@@ -161,6 +161,8 @@ export interface SettingsState {
   voiceInputEnabled: boolean;
   /** 实验功能：Bot 模式；缺省关，关闭时 Main 不启动 Bot 后台逻辑 */
   botModeEnabled: boolean;
+  /** 实验功能：临时会话；缺省关，关闭只藏入口，不删已有会话 */
+  scratchSessionsEnabled: boolean;
   /** Bot 群聊智能选人的分类来源；null 走标题模型回退链 judge */
   botRouteClassifier: VirtualClassifierConfig | null;
   /** Bot 辅助任务（自动设置能力等）用的模型；null 跟随默认模型 */
@@ -354,6 +356,7 @@ export interface SettingsState {
   setMemoryKgEnabled: (value: boolean) => void;
   setVoiceInputEnabled: (value: boolean) => void;
   setBotModeEnabled: (value: boolean) => void;
+  setScratchSessionsEnabled: (value: boolean) => void;
   setBotRouteClassifier: (value: VirtualClassifierConfig | null) => void;
   setBotAssistantModel: (value: DefaultModelRef | null) => void;
   setBotMaxRunningTurns: (value: number) => void;

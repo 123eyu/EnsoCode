@@ -54,6 +54,9 @@ export const SETTINGS_DATA_COVERAGE = {
     'Protected-action confirmation floor for Code sessions; desktop safety preference.'
   ),
   botModeEnabled: excluded('Experimental Bot mode toggle; device-local, not an Enso capability.'),
+  scratchSessionsEnabled: excluded(
+    'Experimental temporary chats toggle; device-local, not an Enso capability.'
+  ),
   botMaxRunningTurns: excluded('Device-local Bot concurrency limit; not an Enso capability.'),
   botRouteClassifier: excluded('Bot group smart-routing model preference; not an Enso capability.'),
   botAssistantModel: excluded('Bot helper-task model preference; not an Enso capability.'),
@@ -193,6 +196,9 @@ export const SETTINGS_ACTION_COVERAGE = {
   setVoiceInputEnabled: excluded('Voice input is a device-local composer preference.'),
   setBotModeEnabled: excluded(
     'Experimental Bot mode toggle; device-local, not an Enso capability.'
+  ),
+  setScratchSessionsEnabled: excluded(
+    'Experimental temporary chats toggle; device-local, not an Enso capability.'
   ),
   setBotRouteClassifier: excluded(
     'Bot group smart-routing model preference; not an Enso capability.'

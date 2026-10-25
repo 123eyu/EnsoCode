@@ -171,6 +171,7 @@ const initialState = {
   memoryKgEnabled: false,
   voiceInputEnabled: false,
   botModeEnabled: false,
+  scratchSessionsEnabled: false,
   botRouteClassifier: null as VirtualClassifierConfig | null,
   botAssistantModel: null as import('@shared/defaultModel').DefaultModelRef | null,
   botMaxRunningTurns: DEFAULT_BOT_MAX_RUNNING_TURNS,
@@ -338,6 +339,7 @@ export const useSettingsStore = create<SettingsState>()(
       setMemoryKgEnabled: (memoryKgEnabled) => set({ memoryKgEnabled }),
       setVoiceInputEnabled: (voiceInputEnabled) => set({ voiceInputEnabled }),
       setBotModeEnabled: (botModeEnabled) => set({ botModeEnabled }),
+      setScratchSessionsEnabled: (scratchSessionsEnabled) => set({ scratchSessionsEnabled }),
       setBotRouteClassifier: (botRouteClassifier) => set({ botRouteClassifier }),
       setBotAssistantModel: (botAssistantModel) => set({ botAssistantModel }),
       setBotMaxRunningTurns: (value) =>
@@ -1215,7 +1217,9 @@ function applyProjectAuthorityProjection(projection: SourceAuthorityProjection):
               sshConnectionId: project.sshConnectionId,
               sshConnectionName: project.sshConnectionName,
             }
-          : {}),
+          : project.kind === 'scratch'
+            ? { kind: 'scratch' as const, name: 'Temporary chats' }
+            : {}),
       };
     });
   // 投影未变时必须不写 state：persist 的每次 setState 都会落盘并广播 SETTINGS_CHANGED，

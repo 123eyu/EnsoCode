@@ -1,6 +1,7 @@
 import { useDraggable } from '@dnd-kit/core';
 import { Editor, type EditorOptions } from '@pierre/diffs/edit';
 import { EditProvider, File, Virtualizer } from '@pierre/diffs/react';
+import { conversationCwd } from '@shared/conversationCwd';
 import type { FilesDirEntry } from '@shared/types';
 import type { ProjectedMessage } from '@shared/types/agent';
 import { ChevronLeft, ChevronRight, Code2, Eye, RefreshCw, Search } from 'lucide-react';
@@ -326,8 +327,14 @@ export function FilesView({ conversationId, projectId }: FilesViewProps) {
   }, [applyDisk, conversationId, readFile]);
 
   const running = useSessionsStore((s) => s.conversations[conversationId]?.status === 'running');
-  const root = useSessionsStore(
-    (s) => s.conversations[conversationId]?.worktree?.path ?? project?.path
+  const root = useSessionsStore((s) =>
+    project?.kind === 'scratch'
+      ? (conversationCwd({
+          kind: 'scratch',
+          canonicalPath: project.path,
+          conversationId,
+        }) ?? undefined)
+      : (s.conversations[conversationId]?.worktree?.path ?? project?.path)
   );
   const historyBaseIndex = useSessionsStore(
     (s) => s.conversations[conversationId]?.historyBaseIndex

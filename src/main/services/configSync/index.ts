@@ -94,6 +94,10 @@ export const CONFIG_SYNC_FIELD_POLICY = {
   memoryKgEnabled: { mode: 'portable' },
   voiceInputEnabled: { mode: 'excluded', reason: 'speech model lives on this device' },
   botModeEnabled: { mode: 'excluded', reason: 'bot members and chats live on this device' },
+  scratchSessionsEnabled: {
+    mode: 'excluded',
+    reason: 'temporary chats are a device-local experiment',
+  },
   botMaxRunningTurns: { mode: 'excluded', reason: 'device-local Bot concurrency limit' },
   botRouteClassifier: { mode: 'excluded', reason: 'bot members and chats live on this device' },
   botAssistantModel: { mode: 'excluded', reason: 'bot members and chats live on this device' },

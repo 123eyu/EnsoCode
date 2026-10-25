@@ -928,6 +928,10 @@ export const zhTranslations: Record<string, string> = {
   'Add project': '添加项目',
   'Adding...': '正在添加...',
   'Add a project to start': '添加一个项目开始',
+  'Temporary chats': '临时会话',
+  'Start a temporary chat': '开始临时会话',
+  'Chats that are not tied to a project. Tools follow your global settings.':
+    '不挂项目的会话。工具跟随全局设置。',
   'Add a local directory as the conversation working folder.': '把本地目录加为对话的工作目录。',
   'Type a path or select from recent projects...': '输入路径或从最近项目中选择...',
   'Local directory': '本地目录',

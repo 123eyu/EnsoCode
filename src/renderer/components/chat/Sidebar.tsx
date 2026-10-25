@@ -177,6 +177,7 @@ export function Sidebar({
 }: SidebarProps) {
   const { t, locale } = useI18n();
   const projects = useSettingsStore((state) => state.projects);
+  const scratchSessionsEnabled = useSettingsStore((state) => state.scratchSessionsEnabled);
   const projectGroups = useSettingsStore((state) => state.projectGroups);
   const createProjectGroup = useSettingsStore((state) => state.createProjectGroup);
   const updateProjectGroup = useSettingsStore((state) => state.updateProjectGroup);
@@ -232,7 +233,11 @@ export function Sidebar({
   const [projectOrderIds, setProjectOrderIds] = useState<string[]>(() =>
     readSidebarOrder(PROJECT_ORDER_KEY)
   );
-  const orderedProjects = applyProjectOrder(projects, projectOrderIds);
+  const orderedProjects = applyProjectOrder(
+    projects.filter((project) => project.kind !== 'scratch'),
+    projectOrderIds
+  );
+  const scratchProject = projects.find((project) => project.kind === 'scratch');
 
   // 项目归档(项目层标记,存 localStorage):整个项目移到底部 Archived 栏目,
   // 不碰其下会话的 archived/pinned——恢复后会话分布与归档前完全一致,
@@ -504,7 +509,7 @@ export function Sidebar({
     conversations,
     orderedProjects.map((project) => project.id),
     archivedProjectIds
-  );
+  ).filter((group) => scratchSessionsEnabled || group.projectId !== scratchProject?.id);
   const searching = listQuery.trim().length > 0;
   const convMatches = (id: string) =>
     matchesQuery(listQuery, [conversations[id]?.title || t('New conversation')]);
@@ -901,13 +906,22 @@ export function Sidebar({
         />
 
         <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-          {projects.length === 0 && (
+          {orderedProjects.length === 0 && (
             <button
               type="button"
               onClick={() => setAddOpen(true)}
               className="w-full rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground transition-colors hover:border-brand/50 hover:text-foreground"
             >
               {t('Add a project to start')}
+            </button>
+          )}
+          {orderedProjects.length === 0 && scratchSessionsEnabled && scratchProject && (
+            <button
+              type="button"
+              onClick={() => void newConversation(scratchProject.id)}
+              className="w-full rounded-lg px-3 py-2 text-center text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              {t('Start a temporary chat')}
             </button>
           )}
           {visibleActiveIds.length > 0 && (
@@ -996,6 +1010,47 @@ export function Sidebar({
                 </SortableContext>
               </div>
             </PinnedDropZone>
+          )}
+          {scratchSessionsEnabled && scratchProject && (
+            <div data-slot="scratch-section">
+              <div className="flex items-center justify-between pr-1">
+                <SidebarSectionLabel>{t('Temporary chats')}</SidebarSectionLabel>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title={t('Start a temporary chat')}
+                  aria-label={t('Start a temporary chat')}
+                  onClick={() => void newConversation(scratchProject.id)}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="flex flex-col gap-y-0.5">
+                {projectConversationIds(order, conversations, scratchProject.id)
+                  .filter((id) => !searching || convMatches(id))
+                  .map((id) => (
+                    <ConversationRow
+                      key={id}
+                      id={id}
+                      conversation={conversations[id]}
+                      active={activeId === id}
+                      switchHint={switchHintFor(id, 'project')}
+                      locale={locale}
+                      nowTick={nowTick}
+                      onSelect={selectConversation}
+                      onTogglePin={togglePinConversation}
+                      onToggleArchive={(conversationId) => void handleToggleArchive(conversationId)}
+                      onCleanupWorktree={(conversationId) =>
+                        void handleCleanupWorktree(conversationId)
+                      }
+                      onMoveToWorktree={(conversationId) =>
+                        void handleMoveToWorktree(conversationId)
+                      }
+                      onRemove={(conversationId) => void openRemoveConversation(conversationId)}
+                    />
+                  ))}
+              </div>
+            </div>
           )}
           {pendingProject && (
             <div className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-muted-foreground">
@@ -2218,6 +2273,11 @@ function ConversationRow({
       (project) => project.id === conversation.projectId && project.kind !== 'ssh'
     )
   );
+  const scratchProject = useSettingsStore((state) =>
+    state.projects.some(
+      (project) => project.id === conversation.projectId && project.kind === 'scratch'
+    )
+  );
   const [renaming, setRenaming] = useState(false);
   const worktree = useSessionsStore((state) => state.conversations[id]?.worktree);
   const workspaceBusy = useSessionsStore((state) =>
@@ -2469,8 +2529,8 @@ function ConversationRow({
                   </ContextMenuItem>
                 )
               : onMoveToWorktree &&
-                useSettingsStore.getState().projects.find((p) => p.id === conversation.projectId)
-                  ?.kind !== 'ssh' && (
+                localProject &&
+                !scratchProject && (
                   <ContextMenuItem disabled={worktreeDisabled} onClick={() => onMoveToWorktree(id)}>
                     <GitBranchPlus />
                     {t('Move to worktree')}

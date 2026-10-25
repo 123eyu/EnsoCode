@@ -782,8 +782,11 @@ export interface ModelRef {
   modelId: string;
 }
 
-/** bot-home：Bot 成员 / 群独立工作区的隐藏项目，只由 Main 创建，不投影给 renderer */
-export type ProjectKind = 'local' | 'ssh' | 'bot-home';
+/**
+ * bot-home：Bot 成员 / 群独立工作区的隐藏项目，只由 Main 创建，不投影给 renderer。
+ * scratch：临时会话的隐藏项目，Main 登记，会投影给 renderer，但不能由 renderer 创建或删除。
+ */
+export type ProjectKind = 'local' | 'ssh' | 'bot-home' | 'scratch';
 
 export interface ProjectAuthority {
   projectId: string;
@@ -2314,6 +2317,9 @@ function isValidProjectRemoteFields(value: Record<string, unknown>): boolean {
     return value.sshHost === undefined && value.sshConnectionId === undefined;
   }
   if (value.kind === 'bot-home') {
+    return value.sshHost === undefined && value.sshConnectionId === undefined;
+  }
+  if (value.kind === 'scratch') {
     return value.sshHost === undefined && value.sshConnectionId === undefined;
   }
   return false;
