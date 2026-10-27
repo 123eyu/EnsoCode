@@ -68,6 +68,16 @@ describe('conversations patch', () => {
     expect(merged.state.order).toEqual(['n']);
   });
 
+  it('ignores partial upserts for conversations missing from the target', () => {
+    const base = blob({ a: { id: 'a' } }, ['a']);
+    const merged = applyConversationsPatch(base, {
+      upserts: { gone: { set: { title: 'renamed' }, unset: [] } },
+      removes: [],
+    }) as ReturnType<typeof blob>;
+    expect(merged.state.conversations).not.toHaveProperty('gone');
+    expect(merged.state.order).toEqual(['a']);
+  });
+
   it('parses only well-formed patches', () => {
     expect(parseConversationsPatch({ upserts: {}, removes: [] })).toEqual({
       upserts: {},

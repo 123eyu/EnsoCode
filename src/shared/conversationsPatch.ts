@@ -89,7 +89,10 @@ export function applyConversationsPatch(target: unknown, patch: ConversationsPat
   const nextConversations: Record<string, Row> = { ...conversations };
   for (const id of patch.removes) delete nextConversations[id];
   for (const [id, row] of Object.entries(patch.upserts)) {
-    const merged: Row = { ...(isRecord(nextConversations[id]) ? nextConversations[id] : {}) };
+    const current = nextConversations[id];
+    // 目标里已没有的会话只收到字段级差量时拼不出完整行，丢弃
+    if (!isRecord(current) && typeof row.set.id !== 'string') continue;
+    const merged: Row = { ...(isRecord(current) ? current : {}) };
     for (const key of row.unset) delete merged[key];
     Object.assign(merged, row.set);
     nextConversations[id] = merged;
