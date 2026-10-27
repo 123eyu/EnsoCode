@@ -6,7 +6,15 @@ import { parseSessionFromSearch, parseSessionId, takeStashedSessionId } from '..
 import { loadActiveDeviceId, loadDevices, saveActiveDeviceId } from '../storage';
 import { PHONE_URL, saveUiMode } from '../uiMode';
 import { watchDeskChrome } from './chrome';
-import { type DeskMeta, deskBase, downloadProgress, loadDeskMeta, saveDeskMeta } from './launch';
+import {
+  buildReady,
+  type DeskMeta,
+  deskBase,
+  downloadProgress,
+  loadDeskMeta,
+  markBuildReady,
+  saveDeskMeta,
+} from './launch';
 import {
   loadReads,
   loadSnapshot,
@@ -208,6 +216,7 @@ async function main(): Promise<void> {
                 const result = frame.invoke(channel, payload);
                 if (channel === IPC_CHANNELS.SETTINGS_READ)
                   void result.then(() => {
+                    if (!settingsLoaded) void markReady(version);
                     settingsLoaded = true;
                   });
                 return result;
@@ -280,16 +289,22 @@ async function main(): Promise<void> {
     });
   });
 
-  /** 某个构建的入口页已在 SW 缓存里：可以不等宿主，直接起 renderer */
+  /** 某个构建曾完整起来过（资源都在 SW 缓存里）：可以不等宿主，直接起 renderer */
   const cachedBuild = async (meta: DeskMeta): Promise<boolean> => {
     try {
       const cache = await caches.open(`${DESK_CACHE_PREFIX}${meta.version}`);
-      return Boolean(
-        await cache.match(`${location.origin}${deskBase(device.pairId, meta.version)}/index.html`)
-      );
+      return await buildReady(cache, location.origin, deskBase(device.pairId, meta.version));
     } catch {
       return false;
     }
+  };
+
+  const markReady = async (build: string): Promise<void> => {
+    if (!build) return;
+    try {
+      const cache = await caches.open(`${DESK_CACHE_PREFIX}${build}`);
+      await markBuildReady(cache, location.origin, deskBase(device.pairId, build));
+    } catch {}
   };
 
   const use = (meta: DeskMeta): void => {
