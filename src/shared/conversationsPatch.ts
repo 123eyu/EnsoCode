@@ -38,6 +38,9 @@ function sliceOf(value: unknown): Slice {
 const same = (a: unknown, b: unknown): boolean =>
   a === b || JSON.stringify(a) === JSON.stringify(b);
 
+/** 侧栏 order 只收根会话；子会话 / btw 只挂在父会话下 */
+const isOrderRoot = (row: unknown): boolean => isRecord(row) && !row.parentId && !row.btwParentId;
+
 export function isEmptyConversationsPatch(patch: ConversationsPatch): boolean {
   return Object.keys(patch.upserts).length === 0 && patch.removes.length === 0 && !patch.order;
 }
@@ -97,7 +100,7 @@ export function applyConversationsPatch(target: unknown, patch: ConversationsPat
     Object.assign(merged, row.set);
     nextConversations[id] = merged;
   }
-  const exists = (id: string) => id in nextConversations;
+  const exists = (id: string) => isOrderRoot(nextConversations[id]);
   const baseOrder = patch.order
     ? mergeConversationOrder(order, patch.order, exists)
     : order.filter(exists);
