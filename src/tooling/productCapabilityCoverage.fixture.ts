@@ -481,6 +481,7 @@ export const IPC_PRODUCT_COVERAGE = {
   WORKFLOW_PRESETS_DELETE: excluded('Settings workflow preset editor delete.'),
   PRESETS_SYSTEM_PROMPT_READ: excluded('Settings-only preset editor content read.'),
   PRESETS_SYSTEM_PROMPT_WRITE: excluded('Settings-only preset editor content write.'),
+  PRESETS_FETCH_IMPORT: excluded('Settings-only preset URL import draft fetch.'),
   AGENT_SPAWN: excluded('Lazy worker lifecycle command behind conversation send.'),
   AGENT_PROMPT: surfaces('conversations.send'),
   AGENT_STEER: surfaces('conversations.queue.send-now'),

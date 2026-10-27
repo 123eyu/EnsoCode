@@ -53,6 +53,7 @@ import { isClassifierOnlyProvider } from '@shared/providerCatalog';
 import { ANTIGRAVITY_PROVIDER_ID, antigravityProviderConfig } from '@shared/providers/antigravity';
 import { installCodexLinkedRefresh } from '@shared/providers/codexAuth';
 import { DEVIN_PROVIDER_ID, devinProviderConfig } from '@shared/providers/devin';
+import { looksLikeRefusal } from '@shared/refusalRetry';
 import type { RequestBodyUsage } from '@shared/requestBodyUsage';
 import { computeStats, toUsageTotals } from '@shared/sessionStats';
 import type { SmartCompactMode } from '@shared/smartCompactMode';
@@ -116,7 +117,11 @@ import {
 } from './backgroundTasks';
 import { CheckpointManager, withCheckpoint } from './checkpoint/manager';
 import { createRemoteCheckpointHost } from './checkpoint/remoteHost';
-import { appendSystemPromptExtension, SUBAGENT_CONTRACT_PROMPT } from './childContract';
+import {
+  appendSystemPromptExtension,
+  SUBAGENT_CONTRACT_PROMPT,
+  tailSystemPromptSection,
+} from './childContract';
 import {
   type ChildThinkingLevel,
   pickChildReasoningOverride,
@@ -334,6 +339,10 @@ interface ManagedSession {
   settlePending?: boolean;
   /** 当前用户轮已做过一次空回复自动续跑 */
   silentTurnNudgeUsed: boolean;
+  /** 推脱补发正文；缺省不重试 */
+  refusalRetryPrompt?: string;
+  /** 本 turnId 已补发过一次 */
+  refusalRetriedTurn?: string;
   /** 本次空回复恢复的类型；post-tool 第二次仍空则失败 */
   silentTurnKind?: SilentTurnKind;
   runawayGuard?: RunawayGuard;
@@ -497,6 +506,10 @@ function createSessionResourceLoader(options: {
   compactRoute?: EnsoCompactOptions;
   /** 仅普通 parent：替换 pi 默认提示词开头的角色段落；会强制整段提示词，故排在扩展最后。 */
   persona?: string;
+  /** skills/cwd 之后的真尾 */
+  systemPromptAppend?: string;
+  /** 真尾之后的短覆盖块 */
+  systemPromptBoost?: string;
   /** 仅子会话：追加子代理行为合同到系统提示词（进 system prompt 才不会随压缩丢失） */
   childContract?: boolean;
 }): DefaultResourceLoader {
@@ -594,6 +607,12 @@ function createSessionResourceLoader(options: {
       options.silentTurnRecovery,
       ...(options.childContract
         ? [appendSystemPromptExtension('subagent-contract', SUBAGENT_CONTRACT_PROMPT)]
+        : []),
+      ...(options.systemPromptAppend
+        ? [tailSystemPromptSection('preset_tail', options.systemPromptAppend)]
+        : []),
+      ...(options.systemPromptBoost
+        ? [tailSystemPromptSection('preset_boost', options.systemPromptBoost)]
         : []),
       ...(persona
         ? [
@@ -1437,6 +1456,9 @@ export class SessionSupervisor {
           command.editMode,
           command.rolePrompt,
           command.systemPrompt,
+          command.systemPromptAppend,
+          command.systemPromptBoost,
+          command.refusalRetryPrompt,
           command.rtkEnabled,
           command.planMode,
           command.trustedProjectCode,
@@ -1956,6 +1978,9 @@ export class SessionSupervisor {
     requestedEditMode?: EditMode,
     rolePrompt?: string,
     systemPrompt?: string,
+    systemPromptAppend?: string,
+    systemPromptBoost?: string,
+    refusalRetryPrompt?: string,
     rtkEnabled = true,
     planMode?: boolean,
     trustedProjectCode: readonly string[] = [],
@@ -2057,6 +2082,8 @@ export class SessionSupervisor {
       exploreFold,
       codemode: codemodeHost.extension,
       persona: systemPrompt,
+      systemPromptAppend,
+      systemPromptBoost,
       ...(compactStrategy !== 'standard'
         ? {
             compactStrategy,
@@ -2395,6 +2422,8 @@ export class SessionSupervisor {
               ...(childExploreFold ? { exploreFold: childExploreFold } : {}),
               codemode: childCodemode.extension,
               childContract: true,
+              systemPromptAppend,
+              systemPromptBoost,
             });
         const [mcpToolGroups] = await Promise.all([mcpPending, subLoader.reload()]);
         if (mcpToolGroups.some((tools) => tools.length === 0)) {
@@ -2811,6 +2840,7 @@ export class SessionSupervisor {
     managedRef.agentControl = agentControl;
     managedRef.workflowRuns = workflowRuns;
     if (rolePrompt && !resumeFile) managedRef.pendingRole = rolePrompt;
+    if (refusalRetryPrompt) managedRef.refusalRetryPrompt = refusalRetryPrompt;
     managedRef.browser = browser;
     managedRef.memory = memory;
     if (toolEnabled('plan')) {
@@ -2944,6 +2974,11 @@ export class SessionSupervisor {
       this.onSessionEvent(managed, event);
     });
     this.sessions.set(identity.sessionId, managed);
+    const parentId = opts.childIdentity?.parent.sessionId ?? opts.parentId;
+    if (parentId) {
+      const parent = this.sessions.get(parentId);
+      if (parent?.refusalRetryPrompt) managed.refusalRetryPrompt = parent.refusalRetryPrompt;
+    }
     this.flushPendingMcpTools(managed);
     this.bindAutoRetryLimit(session);
     const stream = session.agent?.streamFunction;
@@ -3864,6 +3899,7 @@ export class SessionSupervisor {
           this.failTurn(managed, lastAssistant.errorMessage ?? 'Turn failed.');
           return;
         }
+        if (this.tryRefusalRetry(managed, lastAssistant)) return;
         if (this.trySilentTurnRecovery(managed)) return;
         this.completeTurn(managed);
         return;
@@ -3919,6 +3955,27 @@ export class SessionSupervisor {
       }
     }
     return decorated;
+  }
+
+  private tryRefusalRetry(
+    managed: ManagedSession,
+    lastAssistant: ProjectedMessage | undefined
+  ): boolean {
+    const hardening = managed.refusalRetryPrompt;
+    if (!hardening) return false;
+    const turnId = managed.currentTurnId;
+    if (!turnId || managed.refusalRetriedTurn === turnId) return false;
+    const text = (lastAssistant?.content ?? [])
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+    if (!looksLikeRefusal(text)) return false;
+    managed.refusalRetriedTurn = turnId;
+    managed.turnStartIndex = managed.messages.length;
+    void this.promptTracked(managed, hardening).catch((error) => {
+      this.failTurn(managed, toErrorMessage(error));
+    });
+    return true;
   }
 
   private trySilentTurnRecovery(managed: ManagedSession): boolean {
