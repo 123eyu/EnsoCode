@@ -187,6 +187,7 @@ import {
 } from './privacyMask/runtime';
 import { createProjectSettingsManager } from './projectCode';
 import { projectMessage } from './projection';
+import { promptCatalogExtension } from './promptCatalog';
 import { applyWorkerProxyEnv } from './proxyEnv';
 import { withReadTruncationMeta } from './readTruncation';
 import { enqueueReminder, REMINDER_QUEUE_LIMIT } from './reminderQueue';
@@ -526,6 +527,7 @@ function createSessionResourceLoader(options: {
       ...(options.oauthPoolRecovery ? [options.oauthPoolRecovery] : []),
       options.branchContext,
       applyPatchResultExtension,
+      promptCatalogExtension,
       {
         name: 'image-context',
         hidden: true,
