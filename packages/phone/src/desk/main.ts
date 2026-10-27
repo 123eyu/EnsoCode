@@ -2,6 +2,7 @@ import type { RemoteBridge, RemoteFrameKind } from '@shared/remoteBridge';
 import { IPC_CHANNELS } from '@shared/types/ipc';
 import type { ConnState } from '../client';
 import { pickActive } from '../deviceList';
+import { parseSessionFromSearch, parseSessionId, takeStashedSessionId } from '../launchSession';
 import { loadActiveDeviceId, loadDevices, saveActiveDeviceId } from '../storage';
 import { PHONE_URL, saveUiMode } from '../uiMode';
 import { watchDeskChrome } from './chrome';
@@ -147,10 +148,16 @@ async function main(): Promise<void> {
   // 记住桌面模式与所用设备：下次从主屏打开直接回到这里
   saveUiMode('desk');
   saveActiveDeviceId(device.pairId);
+  const urlSession = parseSessionFromSearch(location.search);
+  if (params.has('session')) params.delete('session');
   if (params.get('device') !== device.pairId) {
     params.set('device', device.pairId);
+  }
+  if (`?${params}` !== location.search) {
     history.replaceState(null, '', `${location.pathname}?${params}`);
   }
+  // iOS 冷启动常丢掉 openWindow 的 query，会话 id 在 SW 写入的 Cache 里
+  const launchSessionId = urlSession ?? (await takeStashedSessionId());
 
   await ensureDeskWorker();
 
@@ -235,8 +242,36 @@ async function main(): Promise<void> {
   };
   (window as Window & { __ensoRemote?: RemoteBridge }).__ensoRemote = bridge;
 
+  /**
+   * 会话目录要等连上桌面才有，iframe 还没 attach 或目录未到时发一次会丢。
+   * 重复选择会重走 authority，所以帧就绪后只发三次。
+   */
+  let focusGen = 0;
+  const focusSession = (sessionId: string) => {
+    const gen = ++focusGen;
+    const started = Date.now();
+    let sent = 0;
+    const tick = () => {
+      if (gen !== focusGen) return;
+      if (!attached.main) {
+        if (Date.now() - started < 60_000) window.setTimeout(tick, 500);
+        return;
+      }
+      attached.main.emit(IPC_CHANNELS.NOTIFICATION_FOCUS_SESSION, [sessionId]);
+      sent += 1;
+      if (sent < 3) window.setTimeout(tick, sent === 1 ? 1000 : 3000);
+    };
+    tick();
+  };
+  if (launchSessionId) focusSession(launchSessionId);
+
   navigator.serviceWorker.addEventListener('message', (event) => {
-    const data = event.data as { type?: unknown; path?: unknown } | null;
+    const data = event.data as { type?: unknown; path?: unknown; sessionId?: unknown } | null;
+    if (data?.type === 'open-session') {
+      const sessionId = parseSessionId(data.sessionId);
+      if (sessionId) focusSession(sessionId);
+      return;
+    }
     const port = event.ports[0];
     if (data?.type !== 'desk-fetch' || typeof data.path !== 'string' || !port) return;
     void tunnel.fetchAsset(data.path).then((asset) => {
