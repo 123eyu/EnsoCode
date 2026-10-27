@@ -1,3 +1,4 @@
+import { normalizeRelayUrl } from '@enso/pair';
 import type { RemoteBridge, RemoteFrameKind } from '@shared/remoteBridge';
 import { IPC_CHANNELS } from '@shared/types/ipc';
 import type { ConnState } from '../client';
@@ -5,6 +6,7 @@ import { pickActive } from '../deviceList';
 import { parseSessionFromSearch, parseSessionId, takeStashedSessionId } from '../launchSession';
 import { loadActiveDeviceId, loadDevices, saveActiveDeviceId } from '../storage';
 import { PHONE_URL, saveUiMode } from '../uiMode';
+import { RelayBundle } from './bundle';
 import { watchDeskChrome } from './chrome';
 import {
   buildReady,
@@ -24,7 +26,7 @@ import {
   saveSnapshot,
   snapshotReady,
 } from './snapshot';
-import { type DeskFrame, DeskTunnel } from './tunnel';
+import { type DeskAsset, type DeskFrame, DeskTunnel } from './tunnel';
 
 const DESK_CACHE_PREFIX = 'enso-desk-';
 const META_TIMEOUT_MS = 25_000;
@@ -274,6 +276,20 @@ async function main(): Promise<void> {
   };
   if (launchSessionId) focusSession(launchSessionId);
 
+  /** 电脑报来的清单 id 与中继内置的一致时，renderer 产物直接从中继取（按清单校验） */
+  let relay: RelayBundle | null = null;
+  const fetchDeskAsset = async (path: string): Promise<DeskAsset> => {
+    if (relay && path.startsWith('r/')) {
+      let file = '';
+      try {
+        file = decodeURIComponent(path.slice(2));
+      } catch {}
+      const hit = file ? await relay.get(file) : null;
+      if (hit) return hit;
+    }
+    return tunnel.fetchAsset(path);
+  };
+
   navigator.serviceWorker.addEventListener('message', (event) => {
     const data = event.data as { type?: unknown; path?: unknown; sessionId?: unknown } | null;
     if (data?.type === 'open-session') {
@@ -283,7 +299,7 @@ async function main(): Promise<void> {
     }
     const port = event.ports[0];
     if (data?.type !== 'desk-fetch' || typeof data.path !== 'string' || !port) return;
-    void tunnel.fetchAsset(data.path).then((asset) => {
+    void fetchDeskAsset(data.path).then((asset) => {
       const body = asset.body.slice().buffer;
       port.postMessage({ status: asset.status, mime: asset.mime, body }, [body]);
     });
@@ -388,8 +404,11 @@ async function main(): Promise<void> {
     const iframe = mount('main');
     const started = tunnel.downloadedBytes;
     const timer = setInterval(() => {
+      // 中继给的是原始字节，与按隧道帧估的总量不同口径：走了中继就只显示已下载
+      const fromRelay = relay?.bytes ?? 0;
+      const done = tunnel.downloadedBytes - started + fromRelay;
       progress(
-        `正在下载完整版界面（首次或桌面端升级后需要）… ${downloadProgress(tunnel.downloadedBytes - started, total)}`
+        `正在下载完整版界面（首次或桌面端升级后需要）… ${downloadProgress(done, fromRelay ? undefined : total)}`
       );
     }, 500);
     iframe.addEventListener(
@@ -428,7 +447,7 @@ async function main(): Promise<void> {
       );
   const meta = await tunnel.fetchAsset('meta');
   clearTimeout(timeout);
-  let info: Partial<DeskMeta> & { download?: unknown } = {};
+  let info: Partial<DeskMeta> & { download?: unknown; bundle?: unknown } = {};
   try {
     info = JSON.parse(new TextDecoder().decode(meta.body));
   } catch {}
@@ -439,6 +458,8 @@ async function main(): Promise<void> {
   const current: DeskMeta = { version: info.version, platform: info.platform ?? 'linux' };
   const download =
     typeof info.download === 'number' && info.download > 0 ? info.download : undefined;
+  if (typeof info.bundle === 'string' && /^[0-9a-f]{64}$/.test(info.bundle))
+    relay = new RelayBundle(normalizeRelayUrl(device.relayUrl), info.bundle);
   saveDeskMeta(localStorage, device.pairId, current);
   void pruneSnapshots(
     `${DESK_CACHE_PREFIX}${current.version}`,
