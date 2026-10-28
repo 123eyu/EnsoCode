@@ -45,6 +45,8 @@ export default defineConfig({
       '@platform': path.resolve(__dirname, 'src/server/platform.ts'),
     },
   },
+  // 只有 package.json dependencies 留作外部依赖（见 isExternal），其余（如 devDependencies 里的 qrcode）打进产物
+  ssr: { noExternal: true },
   build: {
     ssr: true,
     target: 'node22',
@@ -60,6 +62,8 @@ export default defineConfig({
       external: isExternal,
       output: {
         format: 'es',
+        // index.js 即 npm 包的 bin
+        banner: (chunk) => (chunk.isEntry && chunk.name === 'index' ? '#!/usr/bin/env node' : ''),
         entryFileNames: '[name].js',
         chunkFileNames: 'chunks/[name]-[hash].js',
       },

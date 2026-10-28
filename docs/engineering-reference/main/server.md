@@ -35,24 +35,25 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
 
 新装的服务端需先用 desk 连一次，leader 才会推出目录（项目、模型列表）；之后手机端可独立使用。
 
-## Node 壳与部署
+## Node 壳与分发
 
-- `pnpm build:server` 产出 `out/server/{index,agent}.js`（另含 `?nodeWorker` 拆出的 worker chunk）；依赖保持 external。
-- `enso-server` 启动宿主；`enso-server pair | devices | update | revoke <id>` 经 `$ENSO_DATA_DIR/server.sock`（0600）操作运行中的宿主。`ENSO_RELAY_URL` 指定中继。
-- `docker/server.Dockerfile` 一条流水线两种产物：`--target bundle-out` 得到安装包（包内自带 node、生产依赖与按 Node ABI 构建的原生模块、`bin/enso-server` 启动脚本）；默认目标是基于安装包的运行镜像，内置 relay-go。依赖安装用 `--ignore-scripts`，避免下载 Electron。
+- 以 npm 包 `@enso/server` 分发：`npm i -g @enso/server`（Node 22+）。`pnpm pack:server` 生成 tgz（`--skip-build` 复用已有 `out/`）。
+- `vite.server.config.ts` 只把 `package.json` 的 `dependencies` 留作外部依赖，其余（如 devDependencies 里的 `qrcode`）打进产物；`index.js` 带 shebang，直接作为 bin。
+- `scripts/pack-server.mjs` 扫描产物里实际 import 的包，生成精简后的 `dependencies`：
+  - 打过补丁的 `@earendil-works/pi-coding-agent` 和 `@rahularya01/pi-cursor` 随包放在 `out/node_modules`。产物解析模块时会先命中这里，再往上找包级 `node_modules`。这里不能用 `bundleDependencies`：npm 会把它们的传递依赖也当成随包内容，结果不解压，留下空目录（例如 esbuild 的 install.js 缺失）。
+  - `node-pty` 换成 `npm:@lydell/node-pty`：上游包在 Linux 上没有预编译产物，用户机器上不一定有编译工具链。
+  - `node-llama-cpp` 不随包，本地 llama 能力缺失时会降级。rtk 也不随包。
+- 子命令：`start` 前台运行，`pair | devices | revoke | status | update` 经 `$ENSO_DATA_DIR/server.sock`（0600）操作运行中的宿主。`pair` 在终端打印二维码，并等待配对完成。`service install|uninstall` 写 systemd 单元（root 写系统级，其他用户写用户级），安装时把当前的 `ENSO_DATA_DIR`、`ENSO_RELAY_URL`、`PATH` 写进单元。`logs` 调用 journalctl。
+- 同一数据目录只允许运行一个宿主：`start` 前先探测控制 socket；`service install` 发现前台实例正在运行时会拒绝安装。
 - 服务器上不可用：桌面控制、内嵌浏览器、托盘、系统通知、原生目录选择（desk 改为手输路径）。
 
 ## 更新与重启
 
-服务端复用桌面的 `updater:*` 通道（多了 `getState` / `restart`），这些通道只有服务端会开放给远端（`allowRemoteHostControl`）；远端连桌面宿主时仍然拒绝。版本以 GitHub `releases/latest` 为准（`ENSO_UPDATE_REPO` / `ENSO_UPDATE_API` 可改）。
+服务端复用桌面的 `updater:*` 通道（多了 `getState` / `restart`），这些通道只有服务端会开放给远端（`allowRemoteHostControl`）；远端连桌面宿主时仍然拒绝。
 
-| 部署 | 识别 | 下载 | 应用 |
-| --- | --- | --- | --- |
-| Docker | `ENSO_UPDATE_MODE=docker` 且 updater sidecar 心跳新鲜 | sidecar `docker pull`，按镜像 `org.opencontainers.image.version` label 判断是否更新 | sidecar 执行 `docker compose up -d relay server` 重建，宿主收到 SIGTERM 退出 |
-| 安装包 | `ENSO_UPDATE_MODE=bundle` 且经 `<install>/current` 启动 | 下载 `enso-server-linux-<arch>.tar.gz`，校验 sha256，解到 `releases/<v>` | 切换 `current`（旧版本记作 `previous`），然后退出，由 systemd 拉起 |
-| 其他 | — | 只报告新版本 | 手动 |
-
-- 宿主和 sidecar 之间只通过共享卷 `/control` 下的纯文本文件通信，格式见 `src/server/update/dockerControl.ts` 与 `docker/updater.sh`。宿主不挂 docker.sock。
-- 远程重启需要有进程守护：compose 设置了 `ENSO_SUPERVISED=1`，systemd 会自带 `INVOCATION_ID`。其他情况不显示重启按钮。
-- 安装包回滚：启动脚本统计 systemd 拉起次数，连续 4 次失败就切回 `previous`，并把坏版本写进 `failed-version`，自更新不会再装回这个版本；宿主稳定运行 60 秒后清零计数。
-- CI（`build.yml` 的 `build-server`）：两个架构各用原生 runner 构建安装包，镜像按 digest 推送；Release 发布后才合并清单并打 `:<version>` / `:latest`，避免镜像先于 Release 被拉到。
+- 新版本以 npm registry 上 `@enso/server` 的 latest dist-tag 为准（`ENSO_NPM_REGISTRY` 可改）。
+- 只有装在可写的全局 `node_modules` 下时才走 `npm` 模式；npx 缓存、源码目录下运行是 `manual`，只报告新版本。
+- 下载 = `npm cache add`。应用 = `npm i -g @enso/server@<v> --prefer-offline` 然后退出，由 systemd 拉起。全局安装改写的是正在运行的文件（懒加载 chunk 的文件名带 hash），所以真正安装放在退出前一刻。
+- 远程重启和"空闲时自动重启"都需要进程守护（systemd 自带 `INVOCATION_ID`，或设置 `ENSO_SUPERVISED=1`）。
+- CI（`build.yml` 的 `publish-server`）：复用 `build-app` 产物打包；打 tag 时 `npm publish`，预发布版本发布到 `next` dist-tag。需要配置 `NPM_TOKEN`。
+- npm 11 起会对依赖的安装脚本给出警告（npm 12 默认阻止）。真正依赖安装脚本的只有 `@vscode/ripgrep`（下载 rg），缺失时只影响工作区文件搜索。

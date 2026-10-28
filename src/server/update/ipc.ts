@@ -4,16 +4,18 @@ import { readSettings } from '../../main/ipc/settings';
 import { allowRemoteHostControl } from '../../main/services/remoteRenderer';
 import { broadcastToRenderers } from '../../main/services/renderers';
 import { currentIdleRestartObservation } from '../../main/services/updater/idleRestartSnapshot';
+import { globalNpmInstaller } from './npm';
 import { ServerUpdater } from './serverUpdater';
+import { NPM_PACKAGE } from './version';
 
 /** 服务端用同一组 updater:* 通道实现自更新与重启，并开放给已配对的浏览器 */
 export function registerServerUpdater(): ServerUpdater {
   const updater = new ServerUpdater({
     version: app.getVersion(),
-    appRoot: app.getAppPath(),
-    arch: process.arch,
+    packageName: NPM_PACKAGE,
     env: process.env,
     fetch: (url, init) => fetch(url, init),
+    npm: globalNpmInstaller(app.getAppPath()),
     broadcast: (status) => broadcastToRenderers(IPC_CHANNELS.UPDATER_STATUS, status),
     quit: () => app.quit(),
     idle: () => currentIdleRestartObservation(true, true),

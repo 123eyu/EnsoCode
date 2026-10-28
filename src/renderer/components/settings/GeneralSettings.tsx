@@ -828,9 +828,7 @@ function serverModeText(
   mode: ServerUpdateMode | undefined,
   t: ReturnType<typeof useI18n>['t']
 ): string {
-  if (mode === 'docker') return t('Server updates pull a new image via the updater container.');
-  if (mode === 'bundle')
-    return t('Server updates install the new release and restart the service.');
+  if (mode === 'npm') return t('Server updates install the new version with npm and restart.');
   return t('This server must be updated on the machine itself.');
 }
 

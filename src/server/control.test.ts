@@ -6,6 +6,7 @@ describe('parseControlCommand', () => {
     expect(parseControlCommand('{"cmd":"pair"}')).toEqual({ cmd: 'pair' });
     expect(parseControlCommand('{"cmd":"devices"}')).toEqual({ cmd: 'devices' });
     expect(parseControlCommand('{"cmd":"update"}')).toEqual({ cmd: 'update' });
+    expect(parseControlCommand('{"cmd":"status"}')).toEqual({ cmd: 'status' });
   });
 
   it('requires an id to revoke', () => {

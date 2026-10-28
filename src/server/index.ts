@@ -1,9 +1,9 @@
 /**
  * EnsoCode 无界面宿主：跑在 Node 上，通过中继与 PWA 配对，浏览器经隧道加载桌面 renderer。
- * `enso-server` 启动宿主；`enso-server pair|devices|update|revoke <id>` 经控制 socket 操作运行中的宿主。
+ * `enso-server start` 前台运行；其余子命令（见 cli.ts）经控制 socket 操作运行中的宿主。
  */
 import { chmodSync, existsSync, rmSync } from 'node:fs';
-import { createConnection, createServer, type Socket } from 'node:net';
+import { createServer, type Socket } from 'node:net';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { app } from '@platform';
@@ -44,13 +44,14 @@ import {
   hasPendingPtys,
   waitPtyQuitIdle,
 } from '../main/services/terminalService';
+import { isRunning, runCommand, USAGE } from './cli';
 import { parseControlCommand } from './control';
 import { registerServerUpdater } from './update/ipc';
 import type { ServerUpdater } from './update/serverUpdater';
 
 const socketPath = (): string => path.join(app.getPath('userData'), 'server.sock');
 
-/** 检查 → 下载 → 应用（应用会让宿主退出，由 compose / systemd 拉起新版本） */
+/** 检查 → 下载 → 应用（应用会让宿主退出，由 systemd 拉起新版本） */
 async function update(updater: ServerUpdater): Promise<unknown> {
   await updater.checkForUpdates();
   if (updater.state().status?.status === 'available') await updater.downloadUpdate();
@@ -66,6 +67,16 @@ async function handle(line: string, updater: ServerUpdater): Promise<unknown> {
   if (command.cmd === 'pair') return startPairing();
   if (command.cmd === 'devices') return { ok: true, status: getPairStatus() };
   if (command.cmd === 'update') return update(updater);
+  if (command.cmd === 'status') {
+    return {
+      ok: true,
+      pid: process.pid,
+      version: app.getVersion(),
+      dataDir: app.getPath('userData'),
+      pair: getPairStatus(),
+      update: updater.state(),
+    };
+  }
   await revokeDevice(command.id);
   return { ok: true };
 }
@@ -136,26 +147,25 @@ function serve(): void {
   console.log(`[server] enso-server ${app.getVersion()} data=${app.getPath('userData')}`);
 }
 
-function client(request: Record<string, unknown>): void {
-  const socket = createConnection(socketPath());
-  socket.on('error', (error) => {
-    console.error(`enso-server is not running (${error.message})`);
-    process.exit(1);
-  });
-  socket.end(`${JSON.stringify(request)}\n`);
-  createInterface({ input: socket }).on('line', (line) => {
-    const reply = JSON.parse(line) as { ok?: boolean; inviteUri?: string };
-    if (reply.inviteUri) console.log(reply.inviteUri);
-    else console.log(JSON.stringify(reply, null, 2));
-    process.exitCode = reply.ok === false ? 1 : 0;
-  });
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  if (argv[0] === 'start') {
+    if (await isRunning(socketPath())) {
+      console.error('enso-server 已在运行（`enso-server status` 查看）');
+      process.exit(1);
+    }
+    serve();
+    return;
+  }
+  const ctx = {
+    socketPath: socketPath(),
+    dataDir: app.getPath('userData'),
+    version: app.getVersion(),
+  };
+  if (!(await runCommand(argv, ctx))) {
+    console.error(USAGE);
+    process.exit(2);
+  }
 }
 
-const [cmd, arg] = process.argv.slice(2);
-if (cmd === 'pair' || cmd === 'devices' || cmd === 'update') client({ cmd });
-else if (cmd === 'revoke') client({ cmd, id: arg ?? '' });
-else if (!cmd || cmd === 'start') serve();
-else {
-  console.error('usage: enso-server [start] | pair | devices | update | revoke <pairId>');
-  process.exit(2);
-}
+void main();

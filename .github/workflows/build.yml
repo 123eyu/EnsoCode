@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 # 缓存按 ref 隔离：tag 触发时只能读 main 上的缓存，tag 上存下的下一个 tag 读不到。
 # 所以这里只读不存，main 上的 pnpm-store-* 由 relay-go / deploy-relay 负责写入。
@@ -314,78 +313,68 @@ jobs:
           retention-days: 7
 
 
-  # 无界面服务端：同一 Dockerfile 产出 systemd 安装包与镜像；各架构原生 runner 构建，镜像先按 digest 推送
-  build-server:
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+  # 无界面服务端：打成 npm 包 @enso/server，tag 时发布到 npm（需配置 NPM_TOKEN）
+  publish-server:
+    needs: build-app
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Resolve image and version
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Get pnpm store directory
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Restore pnpm cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-
+
+      # 只需 vite 与打过补丁的依赖，跳过 Electron 下载等安装脚本
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
+
+      - name: Download build output
+        uses: actions/download-artifact@v7
+        with:
+          name: app-build
+          path: out/
+
+      - name: Pack server
         run: |
-          OWNER="${{ github.repository_owner }}"
-          echo "IMAGE=ghcr.io/${OWNER,,}/enso-server" >> $GITHUB_ENV
-          echo "VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+          pnpm exec vite build -c vite.server.config.ts
+          node scripts/pack-server.mjs --skip-build --out dist
 
-      - name: Setup Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build bundle
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/server.Dockerfile
-          target: bundle-out
-          outputs: type=local,dest=dist
-
-      - name: Smoke test bundle
-        run: |
-          mv dist/enso-server.tar.gz dist/enso-server-linux-${{ matrix.arch }}.tar.gz
-          mkdir -p /tmp/bundle && tar -xzf dist/enso-server-linux-${{ matrix.arch }}.tar.gz -C /tmp/bundle
-          test "$(cat /tmp/bundle/VERSION)" = "$VERSION"
-          cd /tmp/bundle && ./bin/node -e "for (const m of ['better-sqlite3','node-pty','node-datachannel']) require('./node_modules/' + m)"
-
-      - name: Login to GHCR
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push image by digest
-        id: push
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/server.Dockerfile
-          target: runtime
-          platforms: linux/${{ matrix.arch }}
-          build-args: VERSION=${{ env.VERSION }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digest
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: echo "${{ steps.push.outputs.digest }}" > dist/digest-${{ matrix.arch }}
-
-      - name: Upload server artifacts
+      - name: Upload server package
         uses: actions/upload-artifact@v6
         with:
-          name: enso-server-${{ matrix.arch }}
-          path: dist/*
+          name: enso-server-npm
+          path: dist/*.tgz
           retention-days: 7
 
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TAG=latest
+          case "$VERSION" in *-*) TAG=next ;; esac
+          npm publish dist/enso-server-*.tgz --access public --tag "$TAG"
+
   generate-release-notes:
-    needs: [build-mac, build-windows, build-linux, build-relay, build-server]
+    needs: [build-mac, build-windows, build-linux, build-relay, publish-server]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 10
@@ -443,28 +432,6 @@ jobs:
             relay-artifacts/enso-relay-checksums.txt \
             --clobber
 
-      - name: Download server artifacts
-        uses: actions/download-artifact@v7
-        with:
-          pattern: enso-server-*
-          path: server-artifacts
-          merge-multiple: true
-
-      - name: Upload server bundles to Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          cp deploy/server/install.sh server-artifacts/enso-server-install.sh
-          cd server-artifacts
-          sha256sum enso-server-linux-amd64.tar.gz enso-server-linux-arm64.tar.gz > enso-server-checksums.txt
-          gh release upload "$TAG" \
-            enso-server-linux-amd64.tar.gz \
-            enso-server-linux-arm64.tar.gz \
-            enso-server-checksums.txt \
-            enso-server-install.sh \
-            --clobber
-
       - name: Set Tag
         id: tag
         run: |
@@ -489,8 +456,6 @@ jobs:
           TAG="${{ steps.tag.outputs.name }}"
           VERSION="${{ steps.tag.outputs.version }}"
           PREV_TAG="${{ steps.prev_tag.outputs.prev_tag }}"
-          OWNER_LC="${{ github.repository_owner }}"
-          OWNER_LC="${OWNER_LC,,}"
 
           COMMITS=$(git log ${PREV_TAG}..${TAG} --pretty=format:"%s" --no-merges)
 
@@ -545,7 +510,7 @@ jobs:
             echo "- Windows: \`EnsoCode-Setup-${VERSION}.exe\`"
             echo "- Linux: \`.AppImage\` / \`.deb\`"
             echo "- 自建中继: \`enso-relay-linux-amd64\` / \`enso-relay-linux-arm64\`"
-            echo "- 无界面服务端: \`ghcr.io/${OWNER_LC}/enso-server:${VERSION}\`（Docker）/ \`enso-server-install.sh\`（systemd）"
+            echo "- 无界面服务端: \`npm i -g @enso/server\`"
             echo ""
             echo "---"
             echo ""
@@ -559,25 +524,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit ${{ steps.tag.outputs.name }} --draft=false --notes-file release-notes.md --latest
-
-      # Release 发布后再打 latest：服务端按 releases/latest 判断新版本，镜像 tag 不能先于它
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Publish server image
-        run: |
-          OWNER="${{ github.repository_owner }}"
-          IMAGE="ghcr.io/${OWNER,,}/enso-server"
-          VERSION="${{ steps.tag.outputs.version }}"
-          TAGS="-t $IMAGE:$VERSION"
-          case "$VERSION" in *-*) ;; *) TAGS="$TAGS -t $IMAGE:latest" ;; esac
-          docker buildx imagetools create $TAGS \
-            "$IMAGE@$(cat server-artifacts/digest-amd64)" \
-            "$IMAGE@$(cat server-artifacts/digest-arm64)"

@@ -171,12 +171,10 @@ export const zhTranslations: Record<string, string> = {
   'Restart server?': '重启服务端？',
   'Running tasks are interrupted; this page reconnects after the server is back.':
     '正在运行的任务会被中断，服务端起来后本页会自动重连。',
-  'Server updates pull a new image via the updater container.':
-    '服务端（Docker）：由 updater 容器拉取新镜像并重建。',
-  'Server updates install the new release and restart the service.':
-    '服务端（安装包）：下载新版本，重启服务后切换。',
+  'Server updates install the new version with npm and restart.':
+    '服务端（npm 全局安装）：用 npm 安装新版本后重启。',
   'This server must be updated on the machine itself.':
-    '这台服务端无法远程更新，请在服务器上手动更新。',
+    '这台服务端无法远程更新，请在服务器上执行 npm i -g @enso/server。',
   'Automatic updates': '自动更新',
   'Download and install updates automatically': '自动下载并安装更新',
   'Restart and apply when idle': '空闲时重启并应用更新',
