@@ -1,0 +1,21 @@
+# 本地联调：中继与宿主都用 host 网络，Mac 浏览器经 OrbStack 直达 localhost:8787
+services:
+  relay:
+    build: { context: .., dockerfile: docker/server.Dockerfile }
+    image: enso-server:dev
+    network_mode: host
+    command: ["enso-relay", "--listen", ":8787", "--db", "/data/relay.sqlite", "--auto-update=false"]
+    volumes: [relay-data:/data]
+  server:
+    image: enso-server:dev
+    network_mode: host
+    depends_on: [relay]
+    environment:
+      ENSO_RELAY_URL: http://127.0.0.1:8787
+    volumes:
+      - server-data:/data
+      - workspace:/workspace
+volumes:
+  relay-data:
+  server-data:
+  workspace:

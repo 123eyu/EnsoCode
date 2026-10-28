@@ -25,6 +25,7 @@ import { startPairGuest, stopPairGuest } from '../main/services/pairGuest';
 import {
   getPairStatus,
   revokeDevice,
+  setRelayUrl,
   startPairHost,
   startPairing,
   stopPairHost,
@@ -52,7 +53,8 @@ async function handle(line: string): Promise<unknown> {
 function listenControl(): void {
   const file = socketPath();
   if (existsSync(file)) rmSync(file);
-  const server = createServer((socket: Socket) => {
+  // 客户端发完即半关闭；保持写端打开，等异步命令（如向中继登记配对）回包
+  const server = createServer({ allowHalfOpen: true }, (socket: Socket) => {
     createInterface({ input: socket }).on('line', (line) => {
       void handle(line)
         .catch((error: unknown) => ({ ok: false, error: String(error) }))
@@ -82,6 +84,8 @@ function serve(): void {
   void getProxyConfig()
     .whenReady()
     .finally(() => startAgentWorker());
+  const relay = process.env.ENSO_RELAY_URL?.trim();
+  if (relay) setRelayUrl(relay);
   startPairHost();
   startPairGuest();
   listenControl();

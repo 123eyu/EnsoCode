@@ -17,6 +17,7 @@ export {
 
 export const hostKind = 'desktop' as const;
 export const agentWorkerPath = '/tmp/agent.js';
+export const resourcesPath = '/tmp/resources';
 
 export const images = { fromBuffer: () => null };
 export const mediaAccess = { microphone: async () => true };

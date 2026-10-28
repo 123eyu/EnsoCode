@@ -21,6 +21,7 @@ import agentWorkerPath from '../../agent/index?modulePath';
 import type { DecodedImage, ProcessMetric } from '../platform/types';
 
 export const hostKind = 'desktop' as const;
+export const resourcesPath = process.resourcesPath;
 export {
   agentWorkerPath,
   app,

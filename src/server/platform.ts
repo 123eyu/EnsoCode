@@ -21,6 +21,10 @@ import type {
 export const hostKind = 'server' as const;
 /** 服务器构建把 agent worker 与入口并排输出 */
 export const agentWorkerPath = path.join(import.meta.dirname, 'agent.js');
+const appRoot = path.resolve(
+  process.env.ENSO_APP_ROOT?.trim() || path.join(import.meta.dirname, '../..')
+);
+export const resourcesPath = path.join(appRoot, 'resources');
 
 const userData = path.resolve(
   process.env.ENSO_DATA_DIR?.trim() || path.join(homedir(), '.enso-server')
@@ -58,9 +62,7 @@ export const app = {
     }
   },
   getAppPath(): string {
-    return path.resolve(
-      process.env.ENSO_APP_ROOT?.trim() || path.join(import.meta.dirname, '../..')
-    );
+    return appRoot;
   },
   getName: () => 'enso-code',
   getVersion(): string {

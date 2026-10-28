@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { agentWorkerPath, app, utilityProcess, type WorkerProcess } from '@platform';
+import { agentWorkerPath, app, resourcesPath, utilityProcess, type WorkerProcess } from '@platform';
 import { normalizeAutoRetryLimit } from '@shared/autoRetry';
 import {
   type AgentTypeKey,
@@ -294,7 +294,7 @@ export function startAgentWorker(): void {
       PI_CODING_AGENT_DIR: path.join(app.getPath('userData'), 'agent', 'pi-agent'),
       ENSO_RTK_PATH: bundledRtkPath({
         packaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
+        resourcesPath,
         appPath: app.getAppPath(),
         platform: process.platform,
         arch: process.arch,
