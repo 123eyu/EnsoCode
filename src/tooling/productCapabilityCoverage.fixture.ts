@@ -586,6 +586,7 @@ export const IPC_PRODUCT_COVERAGE = {
   ),
   DIALOG_SELECT_DIRECTORY: surfaces('projects.add'),
   PROJECTS_GET_RECENT: surfaces('projects.recent'),
+  PROJECTS_LIST_HOST_DIRS: surfaces('projects.add'),
   PROJECTS_REVEAL: surfaces('projects.list'),
   PROJECTS_OPEN_IN_APPS: surfaces('projects.list'),
   PROJECTS_CODE_SOURCES: excluded(
@@ -626,6 +627,10 @@ export const IPC_PRODUCT_COVERAGE = {
   ),
   PROXY_APPLY: surfaces('general.proxy-mode', 'general.custom-proxy-url'),
   UPDATER_STATUS: surfaces('updates.status'),
+  UPDATER_GET_STATE: surfaces('updates.status'),
+  UPDATER_RESTART: excluded(
+    'Headless server process restart; host operation, not an Enso capability.'
+  ),
   DIALOG_SELECT_FILE: excluded('Native file picker; user-driven OS dialog.'),
   FILES_LIST_MEDIA: excluded('Renderer media listing for background picker.'),
   FILES_SAVE_PASTED_TEXT: excluded('Composer long paste saved as a conversation-scoped txt.'),

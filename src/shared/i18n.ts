@@ -164,6 +164,17 @@ export const zhTranslations: Record<string, string> = {
     '新版本 {{version}} 已就绪 —— 重启以更新。',
   'Update check failed': '检查更新失败',
   'Restart to update': '重启更新',
+  'Update failed: {{error}}': '更新失败：{{error}}',
+  'Download update': '下载更新',
+  Restart: '重启',
+  'Restart server': '重启服务端',
+  'Restart server?': '重启服务端？',
+  'Running tasks are interrupted; this page reconnects after the server is back.':
+    '正在运行的任务会被中断，服务端起来后本页会自动重连。',
+  'Server updates install the new version with npm and restart.':
+    '服务端（npm 全局安装）：用 npm 安装新版本后重启。',
+  'This server must be updated on the machine itself.':
+    '这台服务端无法远程更新，请在服务器上执行 npm i -g @ensocode/server。',
   'Automatic updates': '自动更新',
   'Download and install updates automatically': '自动下载并安装更新',
   'Restart and apply when idle': '空闲时重启并应用更新',
