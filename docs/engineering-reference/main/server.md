@@ -37,7 +37,7 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
 
 ## Node 壳与分发
 
-- 以 npm 包 `@enso/server` 分发：`npm i -g @enso/server`（Node 22+）。`pnpm pack:server` 生成 tgz（`--skip-build` 复用已有 `out/`）。
+- 以 npm 包 `@ensocode/server` 分发：`npm i -g @ensocode/server`（Node 22+）。`pnpm pack:server` 生成 tgz（`--skip-build` 复用已有 `out/`）。
 - `vite.server.config.ts` 只把 `package.json` 的 `dependencies` 留作外部依赖，其余（如 devDependencies 里的 `qrcode`）打进产物；`index.js` 带 shebang，直接作为 bin。
 - `scripts/pack-server.mjs` 扫描产物里实际 import 的包，生成精简后的 `dependencies`：
   - 打过补丁的 `@earendil-works/pi-coding-agent` 和 `@rahularya01/pi-cursor` 随包放在 `out/node_modules`。产物解析模块时会先命中这里，再往上找包级 `node_modules`。这里不能用 `bundleDependencies`：npm 会把它们的传递依赖也当成随包内容，结果不解压，留下空目录（例如 esbuild 的 install.js 缺失）。
@@ -51,9 +51,9 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
 
 服务端复用桌面的 `updater:*` 通道（多了 `getState` / `restart`），这些通道只有服务端会开放给远端（`allowRemoteHostControl`）；远端连桌面宿主时仍然拒绝。
 
-- 新版本以 npm registry 上 `@enso/server` 的 latest dist-tag 为准（`ENSO_NPM_REGISTRY` 可改）。
+- 新版本以 npm registry 上 `@ensocode/server` 的 latest dist-tag 为准（`ENSO_NPM_REGISTRY` 可改）。
 - 只有装在可写的全局 `node_modules` 下时才走 `npm` 模式；npx 缓存、源码目录下运行是 `manual`，只报告新版本。
-- 下载 = `npm cache add`。应用 = `npm i -g @enso/server@<v> --prefer-offline` 然后退出，由 systemd 拉起。全局安装改写的是正在运行的文件（懒加载 chunk 的文件名带 hash），所以真正安装放在退出前一刻。
+- 下载 = `npm cache add`。应用 = `npm i -g @ensocode/server@<v> --prefer-offline` 然后退出，由 systemd 拉起。全局安装改写的是正在运行的文件（懒加载 chunk 的文件名带 hash），所以真正安装放在退出前一刻。
 - 远程重启和"空闲时自动重启"都需要进程守护（systemd 自带 `INVOCATION_ID`，或设置 `ENSO_SUPERVISED=1`）。
 - CI（`build.yml` 的 `publish-server`）：复用 `build-app` 产物打包；打 tag 时 `npm publish`，预发布版本发布到 `next` dist-tag。需要配置 `NPM_TOKEN`。
 - npm 11 起会对依赖的安装脚本给出警告（npm 12 默认阻止）。真正依赖安装脚本的只有 `@vscode/ripgrep`（下载 rg），缺失时只影响工作区文件搜索。

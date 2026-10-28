@@ -14,8 +14,8 @@ const idle = () => ({
 
 const latest = (version: string) =>
   vi.fn(async (url: string, _init?: RequestInit) =>
-    url.endsWith('/@enso%2fserver/latest')
-      ? Response.json({ name: '@enso/server', version })
+    url.endsWith('/@ensocode%2fserver/latest')
+      ? Response.json({ name: '@ensocode/server', version })
       : new Response('', { status: 404 })
   );
 
@@ -28,7 +28,7 @@ let npm: {
 function updater(overrides: Partial<ServerUpdaterDeps> = {}): ServerUpdater {
   return new ServerUpdater({
     version: '0.2.12',
-    packageName: '@enso/server',
+    packageName: '@ensocode/server',
     env: {},
     fetch: latest('0.3.0'),
     npm,
@@ -52,10 +52,10 @@ describe('ServerUpdater (npm)', () => {
     await u.checkForUpdates();
     expect(statuses.at(-1)).toMatchObject({ status: 'available', info: { version: '0.3.0' } });
     await u.downloadUpdate();
-    expect(npm.prefetch).toHaveBeenCalledWith('@enso/server@0.3.0');
+    expect(npm.prefetch).toHaveBeenCalledWith('@ensocode/server@0.3.0');
     expect(statuses.at(-1)).toMatchObject({ status: 'downloaded', info: { version: '0.3.0' } });
     await u.quitAndInstall();
-    expect(npm.install).toHaveBeenCalledWith('@enso/server@0.3.0');
+    expect(npm.install).toHaveBeenCalledWith('@ensocode/server@0.3.0');
     expect(quit).toHaveBeenCalledOnce();
   });
 
@@ -89,7 +89,7 @@ describe('ServerUpdater (npm)', () => {
     const u = updater({ fetch, env: { ENSO_NPM_REGISTRY: 'http://127.0.0.1:4873' } });
     await u.checkForUpdates();
     expect(fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:4873/@enso%2fserver/latest',
+      'http://127.0.0.1:4873/@ensocode%2fserver/latest',
       expect.anything()
     );
   });

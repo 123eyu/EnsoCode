@@ -313,7 +313,7 @@ jobs:
           retention-days: 7
 
 
-  # 无界面服务端：打成 npm 包 @enso/server，tag 时发布到 npm（需配置 NPM_TOKEN）
+  # 无界面服务端：打成 npm 包 @ensocode/server，tag 时发布到 npm（需配置 NPM_TOKEN）
   publish-server:
     needs: build-app
     runs-on: ubuntu-latest
@@ -510,7 +510,7 @@ jobs:
             echo "- Windows: \`EnsoCode-Setup-${VERSION}.exe\`"
             echo "- Linux: \`.AppImage\` / \`.deb\`"
             echo "- 自建中继: \`enso-relay-linux-amd64\` / \`enso-relay-linux-arm64\`"
-            echo "- 无界面服务端: \`npm i -g @enso/server\`"
+            echo "- 无界面服务端: \`npm i -g @ensocode/server\`"
             echo ""
             echo "---"
             echo ""

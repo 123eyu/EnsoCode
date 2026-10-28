@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 把无界面服务端打成 npm 包 @enso/server：out/server 与 renderer 产物 + 精简后的运行时依赖。
+// 把无界面服务端打成 npm 包 @ensocode/server：out/server 与 renderer 产物 + 精简后的运行时依赖。
 // 打过补丁的依赖随包放在 out/node_modules（产物解析时先于包级 node_modules 命中；npm 的 bundleDependencies
 // 会把它们的传递依赖当成随包而不解压），node-pty 换成带 Linux 预编译的 fork，免装编译工具链。
 // 用法: node scripts/pack-server.mjs [--skip-build] [--out <dir>]
@@ -24,7 +24,7 @@ const dest = path.resolve(outArg >= 0 ? args[outArg + 1] : path.join(root, 'dist
 const stage = path.join(root, 'out', 'npm-server');
 const rootPkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 
-const NAME = '@enso/server';
+const NAME = '@ensocode/server';
 /** 打了补丁（patches/）的依赖：npm 用户装不到补丁版，随包发布 */
 const VENDORED = ['@earendil-works/pi-coding-agent', '@rahularya01/pi-cursor'];
 /** 可选能力，缺失时运行时降级（本地 llama 模型） */

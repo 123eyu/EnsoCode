@@ -1,5 +1,5 @@
 /** 服务端以 npm 包分发；更新检查读 registry 的 latest dist-tag */
-export const NPM_PACKAGE = '@enso/server';
+export const NPM_PACKAGE = '@ensocode/server';
 export const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org';
 
 const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;

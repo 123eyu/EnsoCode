@@ -1,9 +1,9 @@
-# @enso/server
+# @ensocode/server
 
 EnsoCode 的无界面服务端：跑在 Linux（或 macOS）上，手机 / 浏览器经中继配对后远程使用 agent。
 
 ```bash
-npm i -g @enso/server        # 需要 Node.js 22+
+npm i -g @ensocode/server        # 需要 Node.js 22+
 enso-server start            # 前台运行
 enso-server pair             # 另开终端：扫码或打开链接完成配对
 ```

@@ -18,13 +18,13 @@ describe('compareVersions', () => {
 
 describe('npm registry', () => {
   it('builds the dist-tag url with an encoded scope', () => {
-    expect(npmLatestUrl('https://registry.npmjs.org/', '@enso/server')).toBe(
-      'https://registry.npmjs.org/@enso%2fserver/latest'
+    expect(npmLatestUrl('https://registry.npmjs.org/', '@ensocode/server')).toBe(
+      'https://registry.npmjs.org/@ensocode%2fserver/latest'
     );
   });
 
   it('accepts only a semver version from the manifest', () => {
-    expect(parseNpmLatest({ name: '@enso/server', version: '0.3.0' })).toBe('0.3.0');
+    expect(parseNpmLatest({ name: '@ensocode/server', version: '0.3.0' })).toBe('0.3.0');
     expect(parseNpmLatest({ version: 'latest' })).toBeNull();
     expect(parseNpmLatest('0.3.0')).toBeNull();
     expect(parseNpmLatest(null)).toBeNull();
