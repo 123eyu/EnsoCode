@@ -1,14 +1,6 @@
-import type {
-  CatalogEntry,
-  HostAppearance,
-  ProjectEntry,
-  ProjectGroupEntry,
-  ProviderEntry,
-  TerminalPalette,
-} from '@enso/pair';
 import { ipcMain } from '@platform';
-import { normalizeTimelinePrefs } from '@shared/pair/timelinePrefs';
 import { IPC_CHANNELS } from '@shared/types';
+import { parsePairCatalogPayload } from '../services/pairCatalogStore';
 import {
   cancelPairing,
   getPairStatus,
@@ -93,44 +85,7 @@ export function registerPairHandlers(): void {
   // renderer 推目录：会话标题/项目/provider 只在 renderer 有，main 与 worker 都没有。
   // providers 必须已剥 apiKey/baseUrl；projectPaths 留在 main 侧用于 spawn 反查 cwd。
   ipcMain.on(IPC_CHANNELS.PAIR_CATALOG, (_event, payload: unknown) => {
-    const p = payload as {
-      catalog?: CatalogEntry[];
-      pinnedOrder?: string[];
-      projects?: ProjectEntry[];
-      projectGroups?: ProjectGroupEntry[];
-      providers?: ProviderEntry[];
-      providersSettled?: boolean;
-      projectPaths?: { id: string; path: string }[];
-      theme?: HostAppearance;
-      terminal?: TerminalPalette;
-      terminalFontFamily?: string;
-      compactReadOnlyTools?: boolean;
-      expandLiveEdits?: boolean;
-      expandLiveReasoning?: boolean;
-      autoCollapseTurns?: boolean;
-      collapseCompletedActivity?: boolean;
-      pinUnfinishedTodos?: boolean;
-    };
-    if (!p || typeof p !== 'object') return;
-    updatePairCatalog({
-      catalog: Array.isArray(p.catalog) ? p.catalog : [],
-      pinnedOrder: Array.isArray(p.pinnedOrder) ? p.pinnedOrder : [],
-      projects: Array.isArray(p.projects) ? p.projects : [],
-      projectGroups: Array.isArray(p.projectGroups) ? p.projectGroups : [],
-      providers: Array.isArray(p.providers) ? p.providers : [],
-      ...(p.providersSettled === false ? { providersSettled: false as const } : {}),
-      projectPaths: Array.isArray(p.projectPaths) ? p.projectPaths : [],
-      theme:
-        p.theme === 'light' || p.theme === 'dark' || p.theme === 'sync-terminal'
-          ? p.theme
-          : 'system',
-      ...(p.terminal ? { terminal: p.terminal } : {}),
-      ...(typeof p.terminalFontFamily === 'string' && p.terminalFontFamily
-        ? { terminalFontFamily: p.terminalFontFamily }
-        : {}),
-      compactReadOnlyTools: p.compactReadOnlyTools !== false,
-      expandLiveEdits: p.expandLiveEdits !== false,
-      ...normalizeTimelinePrefs(p),
-    });
+    const parsed = parsePairCatalogPayload(payload);
+    if (parsed) updatePairCatalog(parsed);
   });
 }

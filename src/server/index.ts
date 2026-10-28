@@ -21,14 +21,21 @@ import {
   syncMemoryEmbeddingFromSettings,
   syncMemoryKgFromSettings,
 } from '../main/services/memoryHost';
+import {
+  flushPairCatalogSnapshot,
+  loadPairCatalogSnapshot,
+  savePairCatalogSnapshot,
+} from '../main/services/pairCatalogStore';
 import { startPairGuest, stopPairGuest } from '../main/services/pairGuest';
 import {
   getPairStatus,
   revokeDevice,
+  setPairCatalogSink,
   setRelayUrl,
   startPairHost,
   startPairing,
   stopPairHost,
+  updatePairCatalog,
 } from '../main/services/pairHost';
 import { getProxyConfig } from '../main/services/proxyConfig';
 import { refreshRemoteLeadership, setupRemoteRenderer } from '../main/services/remoteRenderer';
@@ -79,6 +86,10 @@ function serve(): void {
   syncMemoryEmbeddingFromSettings(state);
   syncMemoryDistillFromSettings(state);
   syncMemoryKgFromSettings(state);
+  // 目录平时由 leader 渲染器推送；重启后先用快照，headless 接管的会话才有据可依
+  const snapshot = loadPairCatalogSnapshot();
+  if (snapshot) updatePairCatalog(snapshot);
+  setPairCatalogSink(savePairCatalogSnapshot);
   // 没有本地窗口：无远端 leader 时由宿主接管 pair 会话
   refreshRemoteLeadership();
   void getProxyConfig()
@@ -91,6 +102,7 @@ function serve(): void {
   listenControl();
 
   app.on('before-quit', () => {
+    flushPairCatalogSnapshot();
     stopPairHost();
     stopPairGuest();
     closeMemoryDb();

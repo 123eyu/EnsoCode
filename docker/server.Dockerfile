@@ -14,11 +14,13 @@ COPY packages/relay/package.json packages/relay/
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --ignore-scripts \
  && pnpm rebuild esbuild node-pty better-sqlite3 node-datachannel protobufjs
+# rtk 按清单下载并校验，单独成层，源码改动不重复拉
+COPY scripts/rtk.mjs scripts/prepare-rtk.mjs scripts/
+COPY resources/rtk/manifest.json resources/rtk/
+RUN node scripts/prepare-rtk.mjs && cp resources/rtk/linux-*/rtk resources/rtk/rtk
 COPY . .
 RUN pnpm build && pnpm exec vite build -c vite.server.config.ts \
  && pnpm --filter @enso/phone build
-# 服务端按打包布局取 resources/rtk/rtk
-RUN node scripts/prepare-rtk.mjs && cp resources/rtk/linux-*/rtk resources/rtk/rtk
 
 FROM golang:1.25-bookworm AS relay
 WORKDIR /src

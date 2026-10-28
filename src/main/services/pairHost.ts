@@ -1613,6 +1613,16 @@ export function forwardAgentEvent(event: RendererAgentEvent): void {
 }
 
 /** renderer 推来的目录/项目/provider（provider 已剥 apiKey/baseUrl） */
+let lastCatalogPayload: Parameters<typeof updatePairCatalog>[0] | null = null;
+let catalogSink: ((payload: Parameters<typeof updatePairCatalog>[0]) => void) | null = null;
+
+/** 目录每次变化都交给 sink（无界面宿主据此落盘） */
+export function setPairCatalogSink(
+  sink: ((payload: Parameters<typeof updatePairCatalog>[0]) => void) | null
+): void {
+  catalogSink = sink;
+}
+
 export function updatePairCatalog(payload: {
   catalog: CatalogEntry[];
   pinnedOrder?: string[];
@@ -1634,6 +1644,8 @@ export function updatePairCatalog(payload: {
 }): void {
   catalog = payload.catalog;
   catalogReady = true;
+  lastCatalogPayload = payload;
+  catalogSink?.(payload);
   pinnedOrder = payload.pinnedOrder ?? [];
   projects = payload.projects;
   projectGroups = payload.projectGroups ?? [];
@@ -1671,6 +1683,10 @@ export function getPairProjects(): ProjectEntry[] {
 export function mutatePairCatalog(mutate: (entries: CatalogEntry[]) => CatalogEntry[]): void {
   if (!catalogReady) return;
   catalog = mutate(catalog);
+  if (lastCatalogPayload) {
+    lastCatalogPayload = { ...lastCatalogPayload, catalog };
+    catalogSink?.(lastCatalogPayload);
+  }
   for (const conn of connections.values()) {
     if (conn.phoneOnline) requestMeta(conn);
   }
