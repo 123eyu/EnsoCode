@@ -38,6 +38,11 @@ function nodeWorker(): Plugin {
 
 export default defineConfig({
   plugins: [nodeWorker()],
+  // ws 打进产物后，可选的 bufferutil / utf-8-validate 被换成空对象，ws 会误以为装了原生加速而调用失败
+  define: {
+    'process.env.WS_NO_BUFFER_UTIL': '"1"',
+    'process.env.WS_NO_UTF_8_VALIDATE': '"1"',
+  },
   resolve: {
     alias: {
       '@shared': path.resolve(__dirname, 'src/shared'),

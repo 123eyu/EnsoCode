@@ -75,6 +75,7 @@ import { ApprovalNotificationGate } from './approvalNotificationGate';
 import { MacosSystemSleepAssertion } from './macosSystemSleepAssertion';
 import { readNotifyMainAgentOnly } from './notifyPolicy';
 import type { BotSessionAccess } from './pairBotFrames';
+import { builtinRelayUrl, dialRelayUrl, publicRelayUrl } from './pairBuiltinRelay';
 import { PAIR_DIRECT_ENABLED, PAIR_STUN_SERVERS } from './pairDirectConfig';
 import { isDirectPeerAvailable, mainDirectPeerFactory, preloadDirectPeer } from './pairDirectPeer';
 import { flushChangedMeta, requestPairMeta } from './pairMetaFlush';
@@ -487,6 +488,8 @@ export function stopPairHost(): void {
 let relayUrlOverride: string | null | undefined;
 
 export function getRelayUrl(): string {
+  const builtin = builtinRelayUrl();
+  if (builtin) return builtin;
   if (relayUrlOverride === undefined) relayUrlOverride = loadRelayUrl();
   return relayUrlOverride ?? DEFAULT_RELAY_URL;
 }
@@ -504,7 +507,7 @@ export async function startPairing(): Promise<{ ok: boolean; inviteUri?: string;
   cancelPairing();
   try {
     const relay = getRelayUrl();
-    pairingSession = await startHostPairing(relay);
+    pairingSession = await startHostPairing(dialRelayUrl(relay));
     pairingInviteUri = buildPairLink({
       relay,
       publicKey: fromBase64Url(pairingSession.publicKeyB64),
@@ -547,7 +550,7 @@ function pollPairing(): void {
           token: result.hostToken,
           contentKey: toBase64Url(result.contentKey),
           deviceName: result.deviceName,
-          relayUrl: session.relayUrl,
+          relayUrl: publicRelayUrl(session.relayUrl),
           pairedAt: Date.now(),
         };
         saveDevices(upsertDevice(loadDevices(), device));
@@ -601,7 +604,7 @@ export async function revokeDevice(pairId: string): Promise<void> {
   forgetDevice(pairId);
   if (device) {
     try {
-      await revokePairing(device.relayUrl, pairId, device.token);
+      await revokePairing(dialRelayUrl(device.relayUrl), pairId, device.token);
     } catch {}
   }
   notifyStatus();
@@ -715,7 +718,7 @@ function openConnection(device: PairedDevice): void {
 function connect(conn: Connection): void {
   if (conn.closed) return;
   const generation = ++conn.generation;
-  const base = toWebSocketUrl(conn.device.relayUrl);
+  const base = toWebSocketUrl(dialRelayUrl(conn.device.relayUrl));
   const url = `${base}/v1/pair/${encodeURIComponent(conn.device.pairId)}?role=host&token=${encodeURIComponent(conn.device.token)}`;
   void openPairRelayWebSocket(url)
     .then((ws) => attachHostSocket(conn, ws, generation))

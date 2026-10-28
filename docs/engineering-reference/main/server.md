@@ -47,6 +47,15 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
 - 同一数据目录只允许运行一个宿主：`start` 前先探测控制 socket；`service install` 发现前台实例正在运行时会拒绝安装。
 - 服务器上不可用：桌面控制、内嵌浏览器、托盘、系统通知、原生目录选择（远端客户端添加项目时改用对话框内的宿主机目录浏览，`projects:list-host-dirs`；其他目录选择仍是手输路径）。
 
+## 内置 web（可选）
+
+默认关闭；`start` / `service install` 给出 `--web`、`--web-host`、`--web-port`、`--public-url` 任一项（或对应 `ENSO_WEB*` / `ENSO_PUBLIC_URL` 环境变量）即开启。
+
+- `src/server/web/relayServer.ts` 在同一端口提供手机 PWA（`out/phone`，源码里回退 `packages/phone/dist`）、`/desk-bundle/<manifest>`（本机 renderer 产物）和中继协议 `/v1/pair/*`，行为对齐 `packages/relay-go`，状态机复用 `packages/relay/src/pairing.ts`；已认领的配对存 `$ENSO_DATA_DIR/relay-pairs.json`（0600）。
+- 默认只听 `127.0.0.1:7878`，TLS 交给用户的反向代理（需支持 WebSocket）。手机端的配对加密（`crypto.subtle`）与完整版（service worker）都要求 https 或 localhost，`http://IP` 下完整版不可用。
+- 配对链接与设备记录用 `--public-url`；宿主自己经 `pairBuiltinRelay.ts` 把它映射回本机端口拨号，不绕反代。开启后忽略 `ENSO_RELAY_URL`。
+- ws 打进产物后 `bufferutil` / `utf-8-validate` 会被替换成空对象，`vite.server.config.ts` 用 `WS_NO_BUFFER_UTIL` / `WS_NO_UTF_8_VALIDATE` 关掉，否则首个入站帧就崩。
+
 ## 更新与重启
 
 服务端复用桌面的 `updater:*` 通道（多了 `getState` / `restart`），这些通道只有服务端会开放给远端（`allowRemoteHostControl`）；远端连桌面宿主时仍然拒绝。

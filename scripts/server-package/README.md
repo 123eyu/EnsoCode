@@ -27,3 +27,21 @@ enso-server logs
 | `logs` | 跟随服务日志 |
 
 环境变量：`ENSO_DATA_DIR`（默认 `~/.enso-server`）、`ENSO_RELAY_URL`（自建中继）。`service install` 会把当时的这些变量和 `PATH` 写进服务。
+
+## 内置 web（可选）
+
+默认手机经公共中继连接。也可以让服务自己提供网页与中继，手机直接访问你的域名：
+
+```bash
+enso-server start --public-url https://enso.example.com   # 默认只听 127.0.0.1:7878
+```
+
+手机端需要 https，请用反向代理（需支持 WebSocket）对外提供，例如 Caddy：
+
+```
+enso.example.com {
+    reverse_proxy 127.0.0.1:7878
+}
+```
+
+参数：`--web`、`--web-host`、`--web-port`、`--public-url`（给出任一即开启），对应环境变量 `ENSO_WEB=1`、`ENSO_WEB_HOST`、`ENSO_WEB_PORT`、`ENSO_PUBLIC_URL`；`service install` 同样接受这些参数。

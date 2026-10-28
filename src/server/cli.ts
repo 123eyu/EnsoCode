@@ -9,21 +9,31 @@ import type { UpdaterState } from '@shared/types/updater';
 import QRCode from 'qrcode';
 import type { ControlCommand } from './control';
 import { serviceUnit } from './service';
+import { DEFAULT_WEB_PORT, parseWebConfig, webEnv } from './web/config';
 
 export const USAGE = `EnsoCode Server — 无界面宿主，手机 / 浏览器配对后远程使用
 
 用法: enso-server <command>
 
-  start                      前台运行（Ctrl+C 退出）
+  start [web 参数]            前台运行（Ctrl+C 退出）
   pair                       生成配对二维码与链接，等待设备配对
   devices                    列出已配对设备
   revoke <pairId>            撤销设备
   status                     运行状态、版本与更新
   update                     检查并安装新版本后重启（npm 全局安装时）
-  service install|uninstall  注册 / 移除 systemd 服务（开机自启、崩溃拉起）
+  service install [web 参数]  注册 systemd 服务（开机自启、崩溃拉起）
+  service uninstall          移除 systemd 服务
   logs                       跟随 systemd 服务日志
 
-环境变量: ENSO_DATA_DIR（默认 ~/.enso-server）  ENSO_RELAY_URL（自建中继）`;
+内置 web（默认关闭；开启后手机直接访问本机，不经公共中继）:
+  --web                      开启
+  --web-host <addr>          监听地址，默认 127.0.0.1（由反向代理对外提供 https）
+  --web-port <port>          监听端口，默认 ${DEFAULT_WEB_PORT}
+  --public-url <url>         手机访问的地址（反代后的 https 根地址）
+  给出任一 web 参数即视为开启
+
+环境变量: ENSO_DATA_DIR（默认 ~/.enso-server）  ENSO_RELAY_URL（自建中继）
+          ENSO_WEB=1  ENSO_WEB_HOST  ENSO_WEB_PORT  ENSO_PUBLIC_URL（同上，参数优先）`;
 
 type Reply = Record<string, unknown> & { ok?: boolean; error?: string };
 
@@ -116,7 +126,9 @@ async function status(socketPath: string): Promise<void> {
   console.log(`状态: 运行中 (pid ${reply.pid})`);
   console.log(`版本: ${reply.version}`);
   console.log(`数据: ${reply.dataDir}`);
-  console.log(`中继: ${pairStatus.relayUrl}`);
+  const web = reply.web as { listen: string; publicUrl: string } | null | undefined;
+  console.log(`中继: ${pairStatus.relayUrl}${web ? '（内置）' : ''}`);
+  if (web) console.log(`Web: 监听 ${web.listen} → ${web.publicUrl}`);
   console.log(`更新: ${updateText}`);
   console.log('设备:');
   printDevices(pairStatus);
@@ -140,10 +152,13 @@ function systemctl(user: boolean, ...args: string[]): void {
 
 async function service(
   action: string | undefined,
+  flags: string[],
   dataDir: string,
   socketPath: string
 ): Promise<void> {
   if (action !== 'install' && action !== 'uninstall') fail(USAGE);
+  const parsed = parseWebConfig(flags, process.env);
+  if (!parsed.ok) fail(`${parsed.error}\n\n${USAGE}`);
   if (spawnSync('systemctl', ['--version']).status !== 0) fail('需要 systemd');
   const root = process.getuid?.() === 0;
   const unitDir = root ? '/etc/systemd/system' : path.join(homedir(), '.config/systemd/user');
@@ -162,6 +177,7 @@ async function service(
     const value = process.env[key]?.trim();
     if (value) env[key] = value;
   }
+  if (parsed.web) Object.assign(env, webEnv(parsed.web));
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(
     unitFile,
@@ -190,7 +206,7 @@ export async function runCommand(
   argv: string[],
   ctx: { socketPath: string; dataDir: string; version: string }
 ): Promise<boolean> {
-  const [cmd, arg] = argv;
+  const [cmd, arg, ...rest] = argv;
   switch (cmd) {
     case 'pair':
       await pair(ctx.socketPath);
@@ -210,7 +226,7 @@ export async function runCommand(
       await update(ctx.socketPath);
       return true;
     case 'service':
-      await service(arg, ctx.dataDir, ctx.socketPath);
+      await service(arg, rest, ctx.dataDir, ctx.socketPath);
       return true;
     case 'logs':
       logs();

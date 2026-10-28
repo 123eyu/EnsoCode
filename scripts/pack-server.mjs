@@ -37,6 +37,7 @@ const sh = (cmd, cmdArgs, cwd = root) => execFileSync(cmd, cmdArgs, { cwd, stdio
 if (!args.includes('--skip-build')) {
   sh('pnpm', ['build']);
   sh('pnpm', ['exec', 'vite', 'build', '-c', 'vite.server.config.ts']);
+  sh('pnpm', ['--filter', '@enso/phone', 'build']);
 }
 
 const noMaps = (src) => !src.endsWith('.map');
@@ -46,6 +47,11 @@ cpSync(path.join(root, 'out/server'), path.join(stage, 'out/server'), {
   filter: noMaps,
 });
 cpSync(path.join(root, 'out/renderer'), path.join(stage, 'out/renderer'), {
+  recursive: true,
+  filter: noMaps,
+});
+// 内置 web 提供的手机 PWA
+cpSync(path.join(root, 'packages/phone/dist'), path.join(stage, 'out/phone'), {
   recursive: true,
   filter: noMaps,
 });
