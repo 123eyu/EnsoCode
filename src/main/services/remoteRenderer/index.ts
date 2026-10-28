@@ -32,6 +32,13 @@ import {
   staleRemoteSenders,
 } from './senders';
 
+let hostControl = false;
+
+/** 无界面服务端把自身的更新/重启开放给已配对的浏览器 */
+export function allowRemoteHostControl(): void {
+  hostControl = true;
+}
+
 /** 断线后保留远端 renderer 的时长：期间事件缓冲，同 cid 回来即续上 */
 const RESUME_GRACE_MS = 30_000;
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
@@ -226,7 +233,7 @@ async function invoke(link: RemoteLink, command: Extract<RemoteToHost, { type: '
   if (!sender.accept(command.id)) return;
   const fail = (error: string) =>
     sender.post({ type: 'rpc-result', cid: command.cid, id: command.id, ok: false, error });
-  if (!isRemoteChannelAllowed(command.ch, isLeader(sender))) {
+  if (!isRemoteChannelAllowed(command.ch, isLeader(sender), hostControl)) {
     return fail(`Channel '${command.ch}' is not available remotely`);
   }
   const handler = registeredHandler(command.ch);
@@ -265,7 +272,7 @@ async function invoke(link: RemoteLink, command: Extract<RemoteToHost, { type: '
 function emit(link: RemoteLink, command: Extract<RemoteToHost, { type: 'rpc-send' }>): void {
   const sender = getRemoteSender(link.pairId, command.cid);
   if (!sender?.online || !sender.accept(command.id)) return;
-  if (!isRemoteChannelAllowed(command.ch, isLeader(sender))) return;
+  if (!isRemoteChannelAllowed(command.ch, isLeader(sender), hostControl)) return;
   const decoded = decodeRemoteValue<unknown>(command.args);
   const args = Array.isArray(decoded) ? decoded : [];
   const event = fakeEvent(sender);

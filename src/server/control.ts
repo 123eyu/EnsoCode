@@ -1,4 +1,8 @@
-export type ControlCommand = { cmd: 'pair' } | { cmd: 'devices' } | { cmd: 'revoke'; id: string };
+export type ControlCommand =
+  | { cmd: 'pair' }
+  | { cmd: 'devices' }
+  | { cmd: 'update' }
+  | { cmd: 'revoke'; id: string };
 
 export function parseControlCommand(line: string): ControlCommand | { error: string } {
   let parsed: unknown;
@@ -9,7 +13,7 @@ export function parseControlCommand(line: string): ControlCommand | { error: str
   }
   if (!parsed || typeof parsed !== 'object') return { error: 'invalid command' };
   const cmd = (parsed as { cmd?: unknown }).cmd;
-  if (cmd === 'pair' || cmd === 'devices') return { cmd };
+  if (cmd === 'pair' || cmd === 'devices' || cmd === 'update') return { cmd };
   if (cmd === 'revoke') {
     const id = (parsed as { id?: unknown }).id;
     if (typeof id !== 'string' || !id.trim()) return { error: 'revoke requires id' };

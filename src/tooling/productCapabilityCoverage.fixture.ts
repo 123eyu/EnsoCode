@@ -626,6 +626,10 @@ export const IPC_PRODUCT_COVERAGE = {
   ),
   PROXY_APPLY: surfaces('general.proxy-mode', 'general.custom-proxy-url'),
   UPDATER_STATUS: surfaces('updates.status'),
+  UPDATER_GET_STATE: surfaces('updates.status'),
+  UPDATER_RESTART: excluded(
+    'Headless server process restart; host operation, not an Enso capability.'
+  ),
   DIALOG_SELECT_FILE: excluded('Native file picker; user-driven OS dialog.'),
   FILES_LIST_MEDIA: excluded('Renderer media listing for background picker.'),
   FILES_SAVE_PASTED_TEXT: excluded('Composer long paste saved as a conversation-scoped txt.'),

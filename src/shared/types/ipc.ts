@@ -362,6 +362,8 @@ export const IPC_CHANNELS = {
   UPDATER_SET_AUTO_UPDATE_ENABLED: 'updater:setAutoUpdateEnabled',
   UPDATER_SET_AUTO_RESTART_WHEN_IDLE: 'updater:setAutoRestartWhenIdle',
   UPDATER_STATUS: 'updater:status',
+  UPDATER_GET_STATE: 'updater:getState',
+  UPDATER_RESTART: 'updater:restart',
 
   // Network proxy
   PROXY_APPLY: 'proxy:apply',

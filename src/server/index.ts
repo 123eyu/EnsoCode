@@ -1,6 +1,6 @@
 /**
  * EnsoCode 无界面宿主：跑在 Node 上，通过中继与 PWA 配对，浏览器经隧道加载桌面 renderer。
- * `enso-server` 启动宿主；`enso-server pair|devices|revoke <id>` 经控制 socket 操作运行中的宿主。
+ * `enso-server` 启动宿主；`enso-server pair|devices|update|revoke <id>` 经控制 socket 操作运行中的宿主。
  */
 import { chmodSync, existsSync, rmSync } from 'node:fs';
 import { createConnection, createServer, type Socket } from 'node:net';
@@ -45,25 +45,38 @@ import {
   waitPtyQuitIdle,
 } from '../main/services/terminalService';
 import { parseControlCommand } from './control';
+import { registerServerUpdater } from './update/ipc';
+import type { ServerUpdater } from './update/serverUpdater';
 
 const socketPath = (): string => path.join(app.getPath('userData'), 'server.sock');
 
-async function handle(line: string): Promise<unknown> {
+/** 检查 → 下载 → 应用（应用会让宿主退出，由 compose / systemd 拉起新版本） */
+async function update(updater: ServerUpdater): Promise<unknown> {
+  await updater.checkForUpdates();
+  if (updater.state().status?.status === 'available') await updater.downloadUpdate();
+  const status = updater.state().status;
+  if (status?.status !== 'downloaded') return { ok: status?.status !== 'error', status };
+  setTimeout(() => void updater.quitAndInstall(), 200);
+  return { ok: true, status, applying: true };
+}
+
+async function handle(line: string, updater: ServerUpdater): Promise<unknown> {
   const command = parseControlCommand(line);
   if ('error' in command) return { ok: false, error: command.error };
   if (command.cmd === 'pair') return startPairing();
   if (command.cmd === 'devices') return { ok: true, status: getPairStatus() };
+  if (command.cmd === 'update') return update(updater);
   await revokeDevice(command.id);
   return { ok: true };
 }
 
-function listenControl(): void {
+function listenControl(updater: ServerUpdater): void {
   const file = socketPath();
   if (existsSync(file)) rmSync(file);
   // 客户端发完即半关闭；保持写端打开，等异步命令（如向中继登记配对）回包
   const server = createServer({ allowHalfOpen: true }, (socket: Socket) => {
     createInterface({ input: socket }).on('line', (line) => {
-      void handle(line)
+      void handle(line, updater)
         .catch((error: unknown) => ({ ok: false, error: String(error) }))
         .then((reply) => socket.end(`${JSON.stringify(reply)}\n`));
     });
@@ -78,6 +91,7 @@ function listenControl(): void {
 function serve(): void {
   setupRemoteRenderer();
   registerIpcHandlers();
+  const updater = registerServerUpdater();
   const persisted = readSettings()?.['enso-settings'] as
     | { state?: Record<string, unknown> }
     | undefined;
@@ -99,7 +113,7 @@ function serve(): void {
   if (relay) setRelayUrl(relay);
   startPairHost();
   startPairGuest();
-  listenControl();
+  listenControl(updater);
 
   app.on('before-quit', () => {
     flushPairCatalogSnapshot();
@@ -138,10 +152,10 @@ function client(request: Record<string, unknown>): void {
 }
 
 const [cmd, arg] = process.argv.slice(2);
-if (cmd === 'pair' || cmd === 'devices') client({ cmd });
+if (cmd === 'pair' || cmd === 'devices' || cmd === 'update') client({ cmd });
 else if (cmd === 'revoke') client({ cmd, id: arg ?? '' });
 else if (!cmd || cmd === 'start') serve();
 else {
-  console.error('usage: enso-server [start] | pair | devices | revoke <pairId>');
+  console.error('usage: enso-server [start] | pair | devices | update | revoke <pairId>');
   process.exit(2);
 }
