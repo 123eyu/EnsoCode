@@ -1,0 +1,20 @@
+[Unit]
+Description=EnsoCode Server
+After=network-online.target
+Wants=network-online.target
+# 自更新与远程重启都靠退出后被拉起，不能被启动频率限制卡住
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=enso
+Group=enso
+EnvironmentFile=-/opt/enso-server/env
+WorkingDirectory=/var/lib/enso-server
+ExecStart=/opt/enso-server/current/bin/enso-server
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

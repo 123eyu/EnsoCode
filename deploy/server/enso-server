@@ -1,0 +1,34 @@
+#!/bin/sh
+# EnsoCode Server 启动脚本：用包内 node 运行宿主。
+# 安装包布局（<install>/releases/<version>）下读取 <install>/env，并在 systemd 连续启动失败时回滚到 previous。
+set -eu
+APP_ROOT=$(CDPATH='' cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd -P)
+export ENSO_APP_ROOT="$APP_ROOT"
+
+if [ "$(basename -- "$(dirname -- "$APP_ROOT")")" = releases ]; then
+  INSTALL_DIR=$(dirname -- "$(dirname -- "$APP_ROOT")")
+  if [ -f "$INSTALL_DIR/env" ]; then
+    set -a
+    . "$INSTALL_DIR/env"
+    set +a
+  fi
+  export ENSO_UPDATE_MODE="${ENSO_UPDATE_MODE:-bundle}"
+  # 只统计 systemd 拉起的宿主进程；宿主稳定运行一分钟后清零
+  if [ $# -eq 0 ] && [ -n "${INVOCATION_ID:-}" ]; then
+    attempts=$(cat "$INSTALL_DIR/boot-attempts" 2>/dev/null || echo 0)
+    attempts=$((attempts + 1))
+    if [ "$attempts" -gt 3 ] && [ -L "$INSTALL_DIR/previous" ]; then
+      target=$(readlink "$INSTALL_DIR/previous")
+      echo "enso-server: $attempts failed starts, rolling back to $target" >&2
+      # 记下坏版本，自更新不再装回它
+      basename -- "$(readlink "$INSTALL_DIR/current")" > "$INSTALL_DIR/failed-version"
+      ln -sfn "$target" "$INSTALL_DIR/.current-rollback"
+      mv -fT "$INSTALL_DIR/.current-rollback" "$INSTALL_DIR/current"
+      rm -f "$INSTALL_DIR/previous" "$INSTALL_DIR/boot-attempts"
+      exec "$INSTALL_DIR/current/bin/enso-server"
+    fi
+    echo "$attempts" > "$INSTALL_DIR/boot-attempts"
+  fi
+fi
+
+exec "$APP_ROOT/bin/node" "$APP_ROOT/out/server/index.js" "$@"

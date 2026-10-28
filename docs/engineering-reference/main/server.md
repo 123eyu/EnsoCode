@@ -38,6 +38,21 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
 ## Node 壳与部署
 
 - `pnpm build:server` 产出 `out/server/{index,agent}.js`（另含 `?nodeWorker` 拆出的 worker chunk）；依赖保持 external。
-- `enso-server` 启动宿主；`enso-server pair | devices | revoke <id>` 经 `$ENSO_DATA_DIR/server.sock`（0600）操作运行中的宿主。`ENSO_RELAY_URL` 指定中继。
-- `docker/server.Dockerfile`：`--ignore-scripts` 安装后只为 Node ABI 重建原生依赖（避免下载 Electron），rg 用系统包，rtk 按打包布局放到 `resources/rtk/rtk`；同一镜像内置 relay-go（含手机 PWA 与 desk renderer 产物）。`docker/compose.yaml` 起 relay + server（host 网络，便于 WebRTC 直连）。
-- 服务器上不可用：桌面控制、内嵌浏览器、托盘、自动更新、系统通知、原生目录选择（desk 改为手输路径）。
+- `enso-server` 启动宿主；`enso-server pair | devices | update | revoke <id>` 经 `$ENSO_DATA_DIR/server.sock`（0600）操作运行中的宿主。`ENSO_RELAY_URL` 指定中继。
+- `docker/server.Dockerfile` 一条流水线两种产物：`--target bundle-out` 得到安装包（包内自带 node、生产依赖与按 Node ABI 构建的原生模块、`bin/enso-server` 启动脚本）；默认目标是基于安装包的运行镜像，内置 relay-go。依赖安装用 `--ignore-scripts`，避免下载 Electron。
+- 服务器上不可用：桌面控制、内嵌浏览器、托盘、系统通知、原生目录选择（desk 改为手输路径）。
+
+## 更新与重启
+
+服务端复用桌面的 `updater:*` 通道（多了 `getState` / `restart`），这些通道只有服务端会开放给远端（`allowRemoteHostControl`）；远端连桌面宿主时仍然拒绝。版本以 GitHub `releases/latest` 为准（`ENSO_UPDATE_REPO` / `ENSO_UPDATE_API` 可改）。
+
+| 部署 | 识别 | 下载 | 应用 |
+| --- | --- | --- | --- |
+| Docker | `ENSO_UPDATE_MODE=docker` 且 updater sidecar 心跳新鲜 | sidecar `docker pull`，按镜像 `org.opencontainers.image.version` label 判断是否更新 | sidecar 执行 `docker compose up -d relay server` 重建，宿主收到 SIGTERM 退出 |
+| 安装包 | `ENSO_UPDATE_MODE=bundle` 且经 `<install>/current` 启动 | 下载 `enso-server-linux-<arch>.tar.gz`，校验 sha256，解到 `releases/<v>` | 切换 `current`（旧版本记作 `previous`），然后退出，由 systemd 拉起 |
+| 其他 | — | 只报告新版本 | 手动 |
+
+- 宿主和 sidecar 之间只通过共享卷 `/control` 下的纯文本文件通信，格式见 `src/server/update/dockerControl.ts` 与 `docker/updater.sh`。宿主不挂 docker.sock。
+- 远程重启需要有进程守护：compose 设置了 `ENSO_SUPERVISED=1`，systemd 会自带 `INVOCATION_ID`。其他情况不显示重启按钮。
+- 安装包回滚：启动脚本统计 systemd 拉起次数，连续 4 次失败就切回 `previous`，并把坏版本写进 `failed-version`，自更新不会再装回这个版本；宿主稳定运行 60 秒后清零计数。
+- CI（`build.yml` 的 `build-server`）：两个架构各用原生 runner 构建安装包，镜像按 digest 推送；Release 发布后才合并清单并打 `:<version>` / `:latest`，避免镜像先于 Release 被拉到。
