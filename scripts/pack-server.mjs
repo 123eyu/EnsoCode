@@ -110,6 +110,8 @@ writeFileSync(
       description:
         'EnsoCode headless server: run agents on a Linux box, use them from your phone or browser',
       license: rootPkg.license,
+      // provenance 校验要求与发布所在仓库一致
+      repository: { type: 'git', url: 'git+https://github.com/J3n5en/EnsoCode.git' },
       type: 'module',
       bin: { 'enso-server': 'out/server/index.js' },
       files: ['out', 'README.md', 'LICENSE'],
