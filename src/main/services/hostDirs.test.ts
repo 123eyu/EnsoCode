@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listHostDirs } from './hostDirs';
+import { createHostDir, listHostDirs } from './hostDirs';
 
 describe('listHostDirs', () => {
   let home: string;
@@ -42,5 +42,24 @@ describe('listHostDirs', () => {
 
   it('reports root as having no parent', async () => {
     expect(await listHostDirs(path.parse(home).root, home)).toMatchObject({ parent: null });
+  });
+
+  it('creates a folder and lists it', async () => {
+    const result = await createHostDir(home, ' gamma ');
+    expect(result).toEqual({ ok: true, path: path.join(home, 'gamma'), parent: home, dirs: [] });
+    expect((await listHostDirs(home, home)).ok && (await listHostDirs(home, home))).toMatchObject({
+      dirs: ['Alpha', 'beta', 'gamma', 'linked'],
+    });
+  });
+
+  it('rejects existing names, bad names and relative parents', async () => {
+    const exists = 'A file or folder with that name already exists.';
+    expect(await createHostDir(home, 'beta')).toEqual({ ok: false, error: exists });
+    expect(await createHostDir(home, 'file.txt')).toEqual({ ok: false, error: exists });
+    for (const name of ['', '  ', '.', '..', 'a/b', 'a\\b', 'a\0b', 'x'.repeat(256)]) {
+      expect(await createHostDir(home, name)).toEqual({ ok: false, error: 'Invalid folder name.' });
+    }
+    expect(await createHostDir('relative', 'x')).toEqual({ ok: false, error: 'Invalid request.' });
+    expect(await createHostDir(path.join(home, 'missing'), 'x')).toMatchObject({ ok: false });
   });
 });

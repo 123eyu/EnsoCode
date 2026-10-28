@@ -1,4 +1,4 @@
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { HostDirListing } from '@shared/types';
@@ -38,4 +38,27 @@ export async function listHostDirs(target?: string, home = homedir()): Promise<H
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** 在宿主机 parent 下新建一级子目录，成功后返回新目录的列表（浏览器直接进入） */
+export async function createHostDir(parent: string, rawName: string): Promise<HostDirListing> {
+  if (!path.isAbsolute(parent)) return { ok: false, error: 'Invalid request.' };
+  const name = rawName.trim();
+  if (
+    !name ||
+    name === '.' ||
+    name === '..' ||
+    /[/\\\0]/.test(name) ||
+    Buffer.byteLength(name) > 255
+  )
+    return { ok: false, error: 'Invalid folder name.' };
+  const target = path.join(parent, name);
+  try {
+    await mkdir(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+      return { ok: false, error: 'A file or folder with that name already exists.' };
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  return listHostDirs(target);
 }

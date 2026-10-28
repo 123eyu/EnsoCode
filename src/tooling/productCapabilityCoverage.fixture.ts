@@ -587,6 +587,7 @@ export const IPC_PRODUCT_COVERAGE = {
   DIALOG_SELECT_DIRECTORY: surfaces('projects.add'),
   PROJECTS_GET_RECENT: surfaces('projects.recent'),
   PROJECTS_LIST_HOST_DIRS: surfaces('projects.add'),
+  PROJECTS_CREATE_HOST_DIR: surfaces('projects.add'),
   PROJECTS_REVEAL: surfaces('projects.list'),
   PROJECTS_OPEN_IN_APPS: surfaces('projects.list'),
   PROJECTS_CODE_SOURCES: excluded(
