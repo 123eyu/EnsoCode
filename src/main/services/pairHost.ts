@@ -38,6 +38,7 @@ import {
   toBase64Url,
   toWebSocketUrl,
 } from '@enso/pair';
+import { app, powerMonitor, powerSaveBlocker } from '@platform';
 import {
   catalogSyncFingerprint,
   channelsForMetaPush,
@@ -67,13 +68,12 @@ import type {
   PairStatus,
 } from '@shared/types/pair';
 import type { SpeechTranscribeResult } from '@shared/types/speech';
-import { app, powerMonitor, powerSaveBlocker } from 'electron';
 import { readTrayPreventDisplaySleep, readTraySleepPolicy } from '../ipc/settings';
 // 会话命令一律走 agentBridge（身份解析留在 ipc/agent.ts），这里只留无需身份的 snapshot。
 import { requestSnapshot, setPinnedSessions } from './agentHost';
 import { ApprovalNotificationGate } from './approvalNotificationGate';
 import { MacosSystemSleepAssertion } from './macosSystemSleepAssertion';
-import { readNotifyMainAgentOnly } from './notifications';
+import { readNotifyMainAgentOnly } from './notifyPolicy';
 import type { BotSessionAccess } from './pairBotFrames';
 import { PAIR_DIRECT_ENABLED, PAIR_STUN_SERVERS } from './pairDirectConfig';
 import { isDirectPeerAvailable, mainDirectPeerFactory, preloadDirectPeer } from './pairDirectPeer';

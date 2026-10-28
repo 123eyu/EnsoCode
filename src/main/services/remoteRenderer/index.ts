@@ -8,14 +8,14 @@ import {
   type HostToRemote,
   type RemoteToHost,
 } from '@enso/pair';
+import { app, type IpcEvent, type IpcInvokeEvent, ipcMain } from '@platform';
 import { RemoteReadCache, takeRemoteMarks } from '@shared/remoteDelta';
 import { IPC_CHANNELS } from '@shared/types';
-import { app, type IpcMainEvent, type IpcMainInvokeEvent, ipcMain } from 'electron';
 import { readSettings } from '../../ipc/settings';
-import { isMainWindowAlive } from '../../windows/MainWindow';
-import { isServerMode } from '../appServerMode';
 import { handleLocalImageRequest } from '../localImageProtocol';
 import { isPairHeadless, setPairHeadless } from '../pairSessionHost';
+import { localMainContents } from '../renderers';
+import { localUi } from '../uiHost';
 import { bundleManifest, downloadEstimate, readRendererAsset, rendererBuildId } from './assets';
 import { isRemoteChannelAllowed } from './channels';
 import { type RemoteLink, setRemoteHostHooks } from './hostHooks';
@@ -75,6 +75,10 @@ export function setupRemoteRenderer(): void {
   });
 }
 
+const isMainWindowAlive = (): boolean => localMainContents() !== null;
+/** 服务器没有本地界面，等同永久托盘态 */
+const isTrayMode = (): boolean => localUi()?.trayMode() ?? true;
+
 export const hasMainRenderer = (): boolean => isMainWindowAlive() || hasRemoteMain();
 
 function isLeader(sender: RemoteSender): boolean {
@@ -92,13 +96,13 @@ export function refreshRemoteLeadership(): void {
     leaderSent.set(sender.id, value);
     sender.send(IPC_CHANNELS.REMOTE_LEADER_CHANGED, value);
   }
-  if (!desktop && isServerMode()) {
+  if (!desktop && isTrayMode()) {
     const headless = leader === null;
     if (isPairHeadless() !== headless) setPairHeadless(headless);
   }
 }
 
-function fakeEvent(sender: RemoteSender): IpcMainInvokeEvent & IpcMainEvent {
+function fakeEvent(sender: RemoteSender): IpcInvokeEvent & IpcEvent {
   return {
     sender,
     senderFrame: null,
@@ -109,7 +113,7 @@ function fakeEvent(sender: RemoteSender): IpcMainInvokeEvent & IpcMainEvent {
     defaultPrevented: false,
     preventDefault() {},
     reply: (channel: string, ...args: unknown[]) => sender.send(channel, ...args),
-  } as unknown as IpcMainInvokeEvent & IpcMainEvent;
+  } as unknown as IpcInvokeEvent & IpcEvent;
 }
 
 function settingsState(): Record<string, unknown> {
