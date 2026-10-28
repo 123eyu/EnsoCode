@@ -27,6 +27,7 @@ import type {
   RendererAgentEvent,
   SpawnModelConfig,
   ThinkingLevel,
+  TitleSummaryInput,
 } from '@shared/types/agent';
 import {
   APPROVAL_MODES,
@@ -691,6 +692,33 @@ function wirePairAgentBridge(): void {
   });
 }
 
+/** 开关与模型以 Main 自读的设置为准；回退链上全部可解析的候选一次性下发，worker 依次尝试 */
+async function requestTitleSummary(
+  conversationId: string,
+  input: TitleSummaryInput,
+  sessionModel?: { providerId: string; modelId: string }
+): Promise<AgentActionResult> {
+  const state = (
+    readSettings()?.['enso-settings'] as { state?: Record<string, unknown> } | undefined
+  )?.state;
+  if (state?.titleSummaryEnabled !== true) {
+    return { ok: false, error: 'title summary disabled' };
+  }
+  let credentialKeys: ReadonlySet<string>;
+  try {
+    credentialKeys = await readStoredOauthCredentialKeys();
+  } catch {
+    return { ok: false, error: 'model credentials unavailable' };
+  }
+  const candidates: SpawnModelConfig[] = [];
+  for (const candidate of titleModelCandidates(state, sessionModel)) {
+    const resolved = resolveModelSelection(candidate.providerId, candidate.modelId, credentialKeys);
+    if (resolved.ok && resolved.selection) candidates.push(resolved.selection.config);
+  }
+  if (candidates.length === 0) return { ok: false, error: 'no usable title model' };
+  return summarizeConversationTitle(conversationId, input, candidates);
+}
+
 function wirePairSessionHost(): void {
   configurePairSessionHost({
     isAlive: (sessionId) => agentSessionIndex.isAlive(sessionId),
@@ -789,6 +817,15 @@ function wirePairSessionHost(): void {
         projectVersion: project.version,
         conversationId: sessionId,
       });
+    },
+    summarizeTitle: (sessionId, input, sessionModel) =>
+      requestTitleSummary(sessionId, input, sessionModel),
+    stallTimeoutMs: () => {
+      const state = (
+        readSettings()?.['enso-settings'] as { state?: Record<string, unknown> } | undefined
+      )?.state;
+      const minutes = Number(state?.generationStallTimeoutMin);
+      return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
     },
     worktreePath: (sessionId) => sessionWorktree(sessionId)?.path,
     worktreeMissing: (sessionId) => {
@@ -1587,30 +1624,7 @@ export function registerAgentHandlers(): void {
               modelId: sessionModelRecord.modelId,
             }
           : undefined;
-      const state = (
-        readSettings()?.['enso-settings'] as { state?: Record<string, unknown> } | undefined
-      )?.state;
-      // 开关以 Main 自读的设置为准，不采信渲染层的调用时机
-      if (state?.titleSummaryEnabled !== true) {
-        return { ok: false, error: 'title summary disabled' };
-      }
-      let credentialKeys: ReadonlySet<string>;
-      try {
-        credentialKeys = await readStoredOauthCredentialKeys();
-      } catch {
-        return { ok: false, error: 'model credentials unavailable' };
-      }
-      const candidates: SpawnModelConfig[] = [];
-      for (const candidate of titleModelCandidates(state, sessionModel)) {
-        const resolved = resolveModelSelection(
-          candidate.providerId,
-          candidate.modelId,
-          credentialKeys
-        );
-        if (resolved.ok && resolved.selection) candidates.push(resolved.selection.config);
-      }
-      if (candidates.length === 0) return { ok: false, error: 'no usable title model' };
-      return summarizeConversationTitle(conversationId, input, candidates);
+      return requestTitleSummary(conversationId, input, sessionModel);
     }
   );
 

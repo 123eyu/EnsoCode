@@ -1,5 +1,6 @@
 import { AUTO_RETRY_LIMIT_OPTIONS, UNLIMITED_AUTO_RETRY } from '@shared/autoRetry';
 import { isValidProxyUrl, type ProxyMode } from '@shared/proxy';
+import { GENERATION_STALL_TIMEOUT_MINUTES } from '@shared/stallTimeout';
 import { type TerminalShell, terminalShellsForPlatform } from '@shared/terminalShell';
 import type { UpdateStatus } from '@shared/types/updater';
 import type { WindowsLocalShell } from '@shared/windowsLocalShell';
@@ -16,7 +17,6 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { useI18n } from '@/i18n';
-import { GENERATION_STALL_TIMEOUT_MINUTES } from '@/stores/sessions/stallTimeout';
 import { useSettingsStore } from '@/stores/settings';
 import { ACTIVE_RETENTION_MINUTES } from '@/stores/settings/activeRetention';
 import {
