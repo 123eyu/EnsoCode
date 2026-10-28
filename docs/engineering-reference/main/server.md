@@ -45,7 +45,7 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
   - `node-llama-cpp` 不随包，本地 llama 能力缺失时会降级。rtk 也不随包。
 - 子命令：`start` 前台运行，`pair | devices | revoke | status | update` 经 `$ENSO_DATA_DIR/server.sock`（0600）操作运行中的宿主。`pair` 在终端打印二维码，并等待配对完成。`service install|uninstall` 写 systemd 单元（root 写系统级，其他用户写用户级），安装时把当前的 `ENSO_DATA_DIR`、`ENSO_RELAY_URL`、`PATH` 写进单元。`logs` 调用 journalctl。
 - 同一数据目录只允许运行一个宿主：`start` 前先探测控制 socket；`service install` 发现前台实例正在运行时会拒绝安装。
-- 服务器上不可用：桌面控制、内嵌浏览器、托盘、系统通知、原生目录选择（desk 改为手输路径）。
+- 服务器上不可用：桌面控制、内嵌浏览器、托盘、系统通知、原生目录选择（远端客户端添加项目时改用对话框内的宿主机目录浏览，`projects:list-host-dirs`；其他目录选择仍是手输路径）。
 
 ## 更新与重启
 

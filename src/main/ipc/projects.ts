@@ -10,6 +10,7 @@ import {
   parseSelectProjectAuthorityRequest,
 } from '@shared/types/agent';
 import { listProjectCodeSources } from '../../agent/projectCode';
+import { listHostDirs } from '../services/hostDirs';
 import { openInApps } from '../services/openInApps';
 import { getRecentProjects } from '../services/recentProjects';
 import { isMainRenderer } from '../services/renderers';
@@ -116,6 +117,12 @@ export function registerProjectHandlers(): void {
       console.warn('[RecentProjects] Failed:', error);
       return [];
     }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PROJECTS_LIST_HOST_DIRS, async (event, target: unknown) => {
+    if (!isMainRenderer(event.sender.id) || (target !== undefined && typeof target !== 'string'))
+      return { ok: false, error: 'Invalid request.' };
+    return listHostDirs(target);
   });
 
   // 渲染层只传标识符，磁盘路径由 Main 从权威记录推导，不接受任意路径

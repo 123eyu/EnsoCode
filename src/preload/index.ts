@@ -99,6 +99,7 @@ import type {
   GitPathsRequest,
   GitRequest,
   GitStatusResult,
+  HostDirListing,
   InstalledPluginInfo,
   ListModelsResult,
   LocalAssetScanResult,
@@ -611,6 +612,9 @@ const electronAPI = {
   projects: {
     /** 从本机编辑器 / 编程应用读取最近打开的目录 */
     getRecent: (): Promise<RecentProject[]> => ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_GET_RECENT),
+    /** 列出宿主机目录的可见子目录；不传或路径不存在时从家目录 / 最近的已存在祖先开始 */
+    listHostDirs: (path?: string): Promise<HostDirListing> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_LIST_HOST_DIRS, path),
     /** 在系统文件管理器（或 appId 指定的应用）里打开项目或会话的实际工作目录；ssh 项目返回 unsupported */
     reveal: (request: {
       projectId: string;
