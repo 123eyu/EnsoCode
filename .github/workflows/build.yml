@@ -313,70 +313,8 @@ jobs:
           retention-days: 7
 
 
-  # 无界面服务端：打成 npm 包 @ensocode/server，tag 时经 npm Trusted Publishing（OIDC，无需 token）发布
-  publish-server:
-    needs: build-app
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          package-manager-cache: false
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-
-      - name: Get pnpm store directory
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Restore pnpm cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-
-
-      # 只需 vite 与打过补丁的依赖，跳过 Electron 下载等安装脚本
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
-
-      - name: Download build output
-        uses: actions/download-artifact@v7
-        with:
-          name: app-build
-          path: out/
-
-      - name: Pack server
-        run: |
-          pnpm exec vite build -c vite.server.config.ts
-          node scripts/pack-server.mjs --skip-build --out dist
-
-      - name: Upload server package
-        uses: actions/upload-artifact@v6
-        with:
-          name: enso-server-npm
-          path: dist/*.tgz
-          retention-days: 7
-
-      - name: Publish to npm
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          # Trusted Publishing 需要 npm >= 11.5.1
-          npm install -g npm@^11.5.1
-          VERSION="${GITHUB_REF_NAME#v}"
-          TAG=latest
-          case "$VERSION" in *-*) TAG=next ;; esac
-          npm publish dist/ensocode-server-*.tgz --access public --tag "$TAG"
-
   generate-release-notes:
-    needs: [build-mac, build-windows, build-linux, build-relay, publish-server]
+    needs: [build-mac, build-windows, build-linux, build-relay]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 10

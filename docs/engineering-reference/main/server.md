@@ -55,5 +55,5 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
 - 只有装在可写的全局 `node_modules` 下时才走 `npm` 模式；npx 缓存、源码目录下运行是 `manual`，只报告新版本。
 - 下载 = `npm cache add`。应用 = `npm i -g @ensocode/server@<v> --prefer-offline` 然后退出，由 systemd 拉起。全局安装改写的是正在运行的文件（懒加载 chunk 的文件名带 hash），所以真正安装放在退出前一刻。
 - 远程重启和"空闲时自动重启"都需要进程守护（systemd 自带 `INVOCATION_ID`，或设置 `ENSO_SUPERVISED=1`）。
-- CI（`build.yml` 的 `publish-server`）：复用 `build-app` 产物打包；打 tag 时 `npm publish`，预发布版本发布到 `next` dist-tag。走 npm Trusted Publishing（OIDC），不需要 token：在 npm 包设置里把 `J3n5en/EnsoCode` 的 `build.yml` 登记为 Trusted Publisher。
+- 发布：`.github/workflows/publish-server.yml` 手动触发，独立于桌面端发版（可填版本号、dist-tag、dry-run；预发布版本默认发到 `next`）。走 npm Trusted Publishing（OIDC），不需要 token；npm 包设置里登记的是 `J3n5en/EnsoCode` 的 `publish-server.yml`。workflow_dispatch 只认默认分支上存在的 workflow 文件。
 - npm 11 起会对依赖的安装脚本给出警告（npm 12 默认阻止）。真正依赖安装脚本的只有 `@vscode/ripgrep`（下载 rg），缺失时只影响工作区文件搜索。
