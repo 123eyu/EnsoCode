@@ -97,5 +97,5 @@ jobs:
         if: ${{ !inputs.dry-run }}
         run: |
           # Trusted Publishing 需要 npm >= 11.5.1；Node 22 自带 npm 10，原地 npm i -g npm 会把自己装坏，改用 npx
-          npx --yes npm@^11.5.1 publish "dist/ensocode-server-$VERSION.tgz" --access public --tag "$DIST_TAG"
+          npx --yes npm@^11.5.1 publish "./dist/ensocode-server-$VERSION.tgz" --access public --tag "$DIST_TAG"
           echo "已发布 @ensocode/server@$VERSION（$DIST_TAG）" >> "$GITHUB_STEP_SUMMARY"
