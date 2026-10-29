@@ -59,6 +59,7 @@ export const zhTranslations: Record<string, string> = {
   'Earlier replies': '之前的回复',
   'Tool descriptions': '工具说明',
   'Restored {{count}} in the reply': '回复中已还原 {{count}} 处',
+  '{{count}} values': '{{count}} 个值',
   'Privacy masking blocks {{kinds}}. Remove it, or change the action or allow list in Settings → Privacy.':
     '隐私脱敏拦截了 {{kinds}}。请删掉它，或到「设置 → 隐私」调整动作或允许名单。',
   'Will be blocked: {{kinds}}': '将被拦截：{{kinds}}',
