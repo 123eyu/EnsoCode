@@ -9,7 +9,13 @@ import { createInterface as createPromptInterface } from 'node:readline/promises
 import type { PairStatus } from '@shared/types/pair';
 import type { UpdaterState } from '@shared/types/updater';
 import QRCode from 'qrcode';
-import { CONFIG_FILE, readServerConfig, writeServerConfig } from './config';
+import {
+  CONFIG_ENV_KEYS,
+  CONFIG_FILE,
+  readServerConfig,
+  type ServerConfig,
+  writeServerConfig,
+} from './config';
 import type { ControlCommand } from './control';
 import { serviceUnit } from './service';
 import { type Prompt, runConfigWizard, type SetupSystem } from './setup/wizard';
@@ -186,17 +192,20 @@ async function service(
   if (!existsSync(unitFile) && (await isRunning(socketPath)))
     fail('enso-server 正在前台运行，先停掉它（Ctrl+C）再注册服务');
   const env: Record<string, string> = { ENSO_DATA_DIR: dataDir, PATH: process.env.PATH ?? '' };
-  for (const key of ['ENSO_RELAY_URL', 'ENSO_NPM_REGISTRY']) {
-    const value = process.env[key]?.trim();
-    if (value) env[key] = value;
-  }
-  // web 参数持久化到配置文件，单元里不写死，之后改配置或重跑 config 才能生效
+  // 设置写进配置文件而不写死在单元里，之后改配置或重跑 config 才能生效
+  const patch: ServerConfig = {};
+  const relayUrl = process.env.ENSO_RELAY_URL?.trim();
+  const npmRegistry = process.env.ENSO_NPM_REGISTRY?.trim();
+  if (relayUrl) patch.relayUrl = relayUrl;
+  if (npmRegistry) patch.npmRegistry = npmRegistry;
   if (parsed.web) {
+    const { host, port, localUrl, publicUrl } = parsed.web;
+    patch.web = { enabled: true, host, port, ...(publicUrl !== localUrl ? { publicUrl } : {}) };
+  }
+  if (Object.keys(patch).length) {
     const current = readServerConfig(dataDir);
     if (!current.ok) fail(current.error);
-    const { host, port, localUrl, publicUrl } = parsed.web;
-    const web = { enabled: true, host, port, ...(publicUrl !== localUrl ? { publicUrl } : {}) };
-    console.log(`web 设置已写入 ${writeServerConfig(dataDir, { ...current.config, web })}`);
+    console.log(`设置已写入 ${writeServerConfig(dataDir, { ...current.config, ...patch })}`);
   }
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(
@@ -283,6 +292,20 @@ function hostSystem(dataDir: string, socketPath: string): SetupSystem {
     sleep,
     serviceInstalled: () => existsSync(unitFile),
     serverRunning: () => isRunning(socketPath),
+    currentRelayUrl: () =>
+      request(socketPath, { cmd: 'status' }).then(
+        (reply) => (reply.pair as PairStatus | undefined)?.relayUrl ?? null,
+        () => null
+      ),
+    serviceOverrides: () => {
+      let unit = '';
+      try {
+        unit = readFileSync(unitFile, 'utf8');
+      } catch {
+        return [];
+      }
+      return CONFIG_ENV_KEYS.filter((key) => unit.includes(`Environment="${key}=`));
+    },
     installService: () => service('install', [], dataDir, socketPath),
     restartService: () =>
       spawnSync(

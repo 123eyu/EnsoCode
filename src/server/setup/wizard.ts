@@ -5,6 +5,7 @@ import { DEFAULT_WEB_PORT } from '../web/config';
 import {
   CADDYFILE,
   caddyBlock,
+  foreignSite,
   hasCaddyBlock,
   isPublicIpv4,
   nipDomain,
@@ -33,6 +34,10 @@ export interface SetupSystem {
   sleep(ms: number): Promise<void>;
   serviceInstalled(): boolean;
   serverRunning(): Promise<boolean>;
+  /** 正在运行的服务实际用的中继地址；没在运行为 null */
+  currentRelayUrl(): Promise<string | null>;
+  /** systemd 单元里写死的 CONFIG_ENV_KEYS */
+  serviceOverrides(): string[];
   installService(): Promise<void>;
   restartService(): boolean;
 }
@@ -193,6 +198,17 @@ async function setupCaddy(
     if (!installCaddy(sys)) return manual('自动安装 Caddy 失败');
   }
   const before = sys.readFile(CADDYFILE);
+  const existing = foreignSite(before, domain, port);
+  if (existing?.proxiesHere) {
+    prompt.say(`${CADDYFILE} 里已有 ${domain} → 127.0.0.1:${port} 的站点，沿用不改`);
+    return true;
+  }
+  if (existing) {
+    prompt.say(
+      `${CADDYFILE} 里已有 ${domain} 站点（不是本向导写的），请把它改成 reverse_proxy 127.0.0.1:${port} 后 systemctl reload caddy`
+    );
+    return false;
+  }
   if (before !== null) sys.writeFile(`${CADDYFILE}.enso-bak`, before);
   sys.writeFile(CADDYFILE, upsertCaddyBlock(before, domain, port));
   if (!sys.exec('caddy', ['validate', '--config', CADDYFILE, '--adapter', 'caddyfile'])) {
@@ -215,6 +231,16 @@ async function setupCaddy(
 /** 返回新配置是否已在运行 */
 async function applyToServer(prompt: Prompt, sys: SetupSystem): Promise<boolean> {
   if (sys.serviceInstalled()) {
+    const pinned = sys.serviceOverrides();
+    if (pinned.length) {
+      prompt.say(`服务单元里写死了 ${pinned.join(', ')}（旧版本写入），会盖过配置文件`);
+      if (await confirm(prompt, '重新注册服务（去掉这些）并重启？')) {
+        await sys.installService();
+        return true;
+      }
+      prompt.say('稍后执行 enso-server service install 重新注册');
+      return false;
+    }
     if (!(await confirm(prompt, '重启 enso-server 服务使配置生效？'))) {
       prompt.say('稍后执行 systemctl restart enso-server 生效');
       return false;
@@ -267,6 +293,7 @@ export async function runConfigWizard(
   const next: ServerConfig = prev.npmRegistry ? { npmRegistry: prev.npmRegistry } : {};
   const prevUrl = prev.web?.publicUrl ? new URL(prev.web.publicUrl).hostname : undefined;
 
+  const runningUrl = await sys.currentRelayUrl();
   const mode = await choose(prompt, '手机怎么连到这台服务器？', MODES, defaultMode(prev, sys));
   let caddyReady = false;
   if (mode === Mode.Relay) {
@@ -321,7 +348,7 @@ export async function runConfigWizard(
         );
     }
   }
-  if (effectiveUrl(prev) !== effectiveUrl(next))
+  if ((runningUrl ?? effectiveUrl(prev)) !== effectiveUrl(next))
     prompt.say('连接地址变了：已配对的设备需要重新配对');
   prompt.say('下一步: enso-server pair');
   return next;

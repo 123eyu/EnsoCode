@@ -40,7 +40,7 @@ port = 7878
 public_url = "https://enso.example.com"
 ```
 
-环境变量：`ENSO_DATA_DIR`（默认 `~/.enso-server`）、`ENSO_RELAY_URL`、`ENSO_WEB` / `ENSO_WEB_HOST` / `ENSO_WEB_PORT` / `ENSO_PUBLIC_URL`。优先级：命令行参数 > 环境变量 > 配置文件。`service install` 把当时的 `ENSO_DATA_DIR`、`ENSO_RELAY_URL`、`PATH` 写进服务，web 参数写进配置文件。
+环境变量：`ENSO_DATA_DIR`（默认 `~/.enso-server`）、`ENSO_RELAY_URL`、`ENSO_WEB` / `ENSO_WEB_HOST` / `ENSO_WEB_PORT` / `ENSO_PUBLIC_URL`。优先级：命令行参数 > 环境变量 > 配置文件。`service install` 只把 `ENSO_DATA_DIR`、`PATH` 写进服务；当时的 `ENSO_RELAY_URL`、`ENSO_NPM_REGISTRY` 和 web 参数写进配置文件。
 
 ## 内置 web（可选）
 

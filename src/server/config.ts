@@ -107,6 +107,16 @@ export function writeServerConfig(dataDir: string, config: ServerConfig): string
   return file;
 }
 
+/** 配置文件管辖的环境变量；写死在 systemd 单元里会盖过配置文件 */
+export const CONFIG_ENV_KEYS = [
+  'ENSO_RELAY_URL',
+  'ENSO_NPM_REGISTRY',
+  'ENSO_WEB',
+  'ENSO_WEB_HOST',
+  'ENSO_WEB_PORT',
+  'ENSO_PUBLIC_URL',
+] as const;
+
 export function configEnv(config: ServerConfig): Record<string, string> {
   const env: Record<string, string> = {};
   if (config.relayUrl) env.ENSO_RELAY_URL = config.relayUrl;
