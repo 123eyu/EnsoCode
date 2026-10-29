@@ -14,12 +14,12 @@ import {
   createEditorPayload,
   extractMentionQuery,
   extractRepresentativeTitle,
+  fileMentionBasename,
   mentionDisplayText,
   mentionPopupLayout,
   resolvePopupKeyAction,
   serializeSegments,
   splitInlineFileTokens,
-  fileMentionBasename,
   splitInlineMentions,
   splitMentionRefs,
 } from './mentionComposer';
