@@ -84,14 +84,3 @@ export function parseWebConfig(
   }
   return { ok: true, web: { host, port, localUrl, publicUrl } };
 }
-
-/** 写进 systemd unit 的环境变量，解析回来与原配置一致 */
-export function webEnv(web: WebConfig): Record<string, string> {
-  const env: Record<string, string> = {
-    ENSO_WEB: '1',
-    ENSO_WEB_HOST: web.host,
-    ENSO_WEB_PORT: String(web.port),
-  };
-  if (web.publicUrl !== web.localUrl) env.ENSO_PUBLIC_URL = web.publicUrl;
-  return env;
-}

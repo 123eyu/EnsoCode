@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WEB_PORT, parseWebConfig, webEnv } from './config';
+import { DEFAULT_WEB_PORT, parseWebConfig } from './config';
 
 describe('parseWebConfig', () => {
   it('is off by default', () => {
@@ -83,23 +83,5 @@ describe('parseWebConfig', () => {
     ] as [string[], Record<string, string>][]) {
       expect(parseWebConfig(argv, env).ok, JSON.stringify([argv, env])).toBe(false);
     }
-  });
-});
-
-describe('webEnv', () => {
-  it('round-trips through the environment', () => {
-    const parsed = parseWebConfig(
-      ['--web-host', '0.0.0.0', '--public-url', 'https://d.example.com'],
-      {}
-    );
-    if (!parsed.ok || !parsed.web) throw new Error('expected web config');
-    const env = webEnv(parsed.web);
-    expect(env).toEqual({
-      ENSO_WEB: '1',
-      ENSO_WEB_HOST: '0.0.0.0',
-      ENSO_WEB_PORT: String(DEFAULT_WEB_PORT),
-      ENSO_PUBLIC_URL: 'https://d.example.com',
-    });
-    expect(parseWebConfig([], env)).toEqual(parsed);
   });
 });

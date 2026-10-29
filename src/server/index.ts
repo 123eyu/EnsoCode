@@ -45,6 +45,7 @@ import {
   waitPtyQuitIdle,
 } from '../main/services/terminalService';
 import { isRunning, runCommand, USAGE } from './cli';
+import { applyConfigEnv, readServerConfig } from './config';
 import { parseControlCommand } from './control';
 import { registerServerUpdater } from './update/ipc';
 import type { ServerUpdater } from './update/serverUpdater';
@@ -161,6 +162,12 @@ async function serve(web: WebConfig | null): Promise<void> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv[0] === 'start') {
+    const config = readServerConfig(app.getPath('userData'));
+    if (!config.ok) {
+      console.error(`配置文件有误：${config.error}`);
+      process.exit(2);
+    }
+    applyConfigEnv(process.env, config.config);
     const parsed = parseWebConfig(argv.slice(1), process.env);
     if (!parsed.ok) {
       console.error(`${parsed.error}\n\n${USAGE}`);

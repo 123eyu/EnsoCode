@@ -44,12 +44,14 @@ app 路径来自 `ENSO_DATA_DIR`（默认 `~/.enso-server`）与 `ENSO_APP_ROOT`
   - `node-pty` 换成 `npm:@lydell/node-pty`：上游包在 Linux 上没有预编译产物，用户机器上不一定有编译工具链。
   - `node-llama-cpp` 不随包，本地 llama 能力缺失时会降级。rtk 也不随包。
 - 子命令：`start` 前台运行，`pair | devices | revoke | status | update` 经 `$ENSO_DATA_DIR/server.sock`（0600）操作运行中的宿主。`pair` 在终端打印二维码，并等待配对完成。`service install|uninstall` 写 systemd 单元（root 写系统级，其他用户写用户级），安装时把当前的 `ENSO_DATA_DIR`、`ENSO_RELAY_URL`、`PATH` 写进单元。`logs` 调用 journalctl。
+- 配置：`$ENSO_DATA_DIR/config.toml`（`src/server/config.ts`），`start` 时只补环境里没设的 `ENSO_*`，所以优先级是参数 > 环境变量 > 文件；未知键或类型不对直接拒绝启动。`service install` 的 web 参数写进这个文件而不写死在单元里，并总是 `restart`（已运行时 `enable --now` 不会重启）。
+- `config` 向导（`src/server/setup/`）：公共中继 / 自己反代（打印 Caddy、nginx 示例）/ 自有域名 + Caddy（先查 A 记录是否指向本机公网 IP）/ `公网IP.nip.io` + Caddy。root 下用系统包管理器装 Caddy，Caddyfile 里只维护带标记的一段（发行版自带的 `:80` 示例整份替换），写前备份为 `.enso-bak`，`caddy validate` 不过就还原；最后探测本机端口和公开地址的 `/healthz`。系统操作经 `SetupSystem` 注入，流程有单测。
 - 同一数据目录只允许运行一个宿主：`start` 前先探测控制 socket；`service install` 发现前台实例正在运行时会拒绝安装。
 - 服务器上不可用：桌面控制、内嵌浏览器、托盘、系统通知、原生目录选择（远端客户端添加项目时改用对话框内的宿主机目录浏览，`projects:list-host-dirs`，可就地新建文件夹 `projects:create-host-dir`；其他目录选择仍是手输路径）。
 
 ## 内置 web（可选）
 
-默认关闭；`start` / `service install` 给出 `--web`、`--web-host`、`--web-port`、`--public-url` 任一项（或对应 `ENSO_WEB*` / `ENSO_PUBLIC_URL` 环境变量）即开启。
+默认关闭；`enso-server config` 或 `start` / `service install` 给出 `--web`、`--web-host`、`--web-port`、`--public-url` 任一项（或对应 `ENSO_WEB*` / `ENSO_PUBLIC_URL` 环境变量）即开启。
 
 - `src/server/web/relayServer.ts` 在同一端口提供手机 PWA（`out/phone`，源码里回退 `packages/phone/dist`）、`/desk-bundle/<manifest>`（本机 renderer 产物）和中继协议 `/v1/pair/*`，行为对齐 `packages/relay-go`，状态机复用 `packages/relay/src/pairing.ts`；已认领的配对存 `$ENSO_DATA_DIR/relay-pairs.json`（0600）。
 - 默认只听 `127.0.0.1:7878`，TLS 交给用户的反向代理（需支持 WebSocket）。手机端的配对加密（`crypto.subtle`）与完整版（service worker）都要求 https 或 localhost，`http://IP` 下完整版不可用。
