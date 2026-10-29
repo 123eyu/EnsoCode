@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { caddyBlock, isPublicIpv4, nipDomain, normalizeDomain, upsertCaddyBlock } from './caddy';
+import {
+  caddyBlock,
+  foreignSite,
+  isPublicIpv4,
+  nipDomain,
+  normalizeDomain,
+  upsertCaddyBlock,
+} from './caddy';
 
 const DEBIAN_DEFAULT = `# The Caddyfile is an easy way to configure your Caddy web server.
 #
@@ -37,6 +44,38 @@ describe('upsertCaddyBlock', () => {
     expect(once).toBe(`${other}\n${block}`);
     const twice = upsertCaddyBlock(once, 'new.example.com', 9000);
     expect(twice).toBe(`${other}\n${caddyBlock('new.example.com', 9000)}`);
+  });
+});
+
+describe('foreignSite', () => {
+  const hand = `{
+	email me@example.com
+}
+
+(common) {
+	encode gzip
+}
+
+blog.example.com, https://23-138-76-150.nip.io:443 {
+	import common
+	reverse_proxy localhost:7878 # hand written
+}
+`;
+
+  it('finds a hand-written site for the domain and whether it proxies to the port', () => {
+    expect(foreignSite(hand, '23-138-76-150.nip.io', 7878)).toEqual({ proxiesHere: true });
+    expect(foreignSite(hand, '23-138-76-150.nip.io', 9000)).toEqual({ proxiesHere: false });
+    expect(foreignSite(hand, 'blog.example.com', 7878)).toEqual({ proxiesHere: true });
+    expect(foreignSite(hand, 'email', 7878)).toBeNull();
+    expect(foreignSite(hand, 'common', 7878)).toBeNull();
+    expect(foreignSite(null, 'enso.example.com', 7878)).toBeNull();
+  });
+
+  it('ignores its own marked block', () => {
+    expect(foreignSite(caddyBlock('enso.example.com', 7878), 'enso.example.com', 7878)).toBeNull();
+    expect(foreignSite('enso.example.com {\n\tfile_server\n}\n', 'enso.example.com', 7878)).toEqual(
+      { proxiesHere: false }
+    );
   });
 });
 

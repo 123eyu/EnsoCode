@@ -48,6 +48,8 @@ function fakeSystem(overrides: Partial<SetupSystem> = {}) {
     sleep: async () => {},
     serviceInstalled: () => false,
     serverRunning: async () => false,
+    currentRelayUrl: async () => null,
+    serviceOverrides: () => [],
     installService: async () => {
       serviceInstalls++;
     },
@@ -73,6 +75,51 @@ const saved = () => {
 };
 
 describe('runConfigWizard', () => {
+  it('reuses a hand-written Caddy site that already proxies here', async () => {
+    const { prompt, out, left } = scripted(['4', '', '', '']);
+    const hand = '23-138-76-150.nip.io {\n\treverse_proxy 127.0.0.1:7878\n}\n';
+    const fake = fakeSystem({
+      serviceInstalled: () => true,
+      currentRelayUrl: async () => 'https://23-138-76-150.nip.io',
+    });
+    fake.sys.has = () => true;
+    fake.files.set(CADDYFILE, hand);
+    await runConfigWizard(prompt, fake.sys, { dataDir: dir });
+    expect(left()).toBe(0);
+    expect(fake.files.get(CADDYFILE)).toBe(hand);
+    expect(fake.execs).toEqual([]);
+    expect(out()).toContain('沿用');
+    expect(out()).not.toContain('手动配置');
+    expect(out()).not.toContain('重新配对');
+    expect(saved().web?.publicUrl).toBe('https://23-138-76-150.nip.io');
+  });
+
+  it('asks to edit a hand-written Caddy site that proxies elsewhere', async () => {
+    const { prompt, out, left } = scripted(['4', '', '', 'n']);
+    const hand = '23-138-76-150.nip.io {\n\tfile_server\n}\n';
+    const fake = fakeSystem();
+    fake.sys.has = () => true;
+    fake.files.set(CADDYFILE, hand);
+    await runConfigWizard(prompt, fake.sys, { dataDir: dir });
+    expect(left()).toBe(0);
+    expect(fake.files.get(CADDYFILE)).toBe(hand);
+    expect(fake.execs).toEqual([]);
+    expect(out()).toContain('已有 23-138-76-150.nip.io 站点');
+  });
+
+  it('re-registers a service whose unit pins settings the config file should own', async () => {
+    const { prompt, out, left } = scripted(['', '', '']);
+    const fake = fakeSystem({
+      serviceInstalled: () => true,
+      serviceOverrides: () => ['ENSO_WEB', 'ENSO_PUBLIC_URL'],
+    });
+    await runConfigWizard(prompt, fake.sys, { dataDir: dir });
+    expect(left()).toBe(0);
+    expect(out()).toContain('ENSO_WEB, ENSO_PUBLIC_URL');
+    expect(fake.serviceInstalls()).toBe(1);
+    expect(fake.restarted()).toBe(0);
+  });
+
   it('keeps the public relay by default', async () => {
     const { prompt, out, left } = scripted(['', '', 'n']);
     const fake = fakeSystem();

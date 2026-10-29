@@ -21,18 +21,62 @@ const MARK = BEGIN.slice(0, BEGIN.indexOf('（'));
 
 export const hasCaddyBlock = (text: string | null): boolean => Boolean(text?.includes(MARK));
 
+function withoutBlock(text: string): string {
+  const start = text.indexOf(MARK);
+  const end = text.indexOf(END);
+  if (start === -1 || end < start) return text;
+  return text.slice(0, start) + text.slice(end + END.length).replace(/^\n/, '');
+}
+
 /** 写入（或替换）自己的标记段，保留用户的其他站点 */
 export function upsertCaddyBlock(existing: string | null, domain: string, port: number): string {
   const block = caddyBlock(domain, port);
   if (!existing?.trim() || isPackageDefault(existing)) return block;
-  const start = existing.indexOf(MARK);
-  const end = existing.indexOf(END);
-  let rest = existing;
-  if (start !== -1 && end > start) {
-    rest = existing.slice(0, start) + existing.slice(end + END.length).replace(/^\n/, '');
-  }
-  rest = rest.replace(/\n+$/, '\n');
+  const rest = withoutBlock(existing).replace(/\n+$/, '\n');
   return rest.trim() ? `${rest}\n${block}` : block;
+}
+
+const siteHost = (address: string) =>
+  address
+    .toLowerCase()
+    .replace(/^[a-z]+:\/\//, '')
+    .replace(/:\d+$/, '');
+
+/**
+ * 标记段之外（用户手写的）同域名站点；再写一份 Caddy 会报 ambiguous site definition。
+ * 只认顶层 `地址[, 地址] {` 形式，全局选项块和 `(snippet)` 不算。
+ */
+export function foreignSite(
+  text: string | null,
+  domain: string,
+  port: number
+): { proxiesHere: boolean } | null {
+  if (!text) return null;
+  const proxy = new RegExp(
+    `\\breverse_proxy\\s+(?:https?://)?(?:127\\.0\\.0\\.1|localhost):${port}(?!\\d)`
+  );
+  let depth = 0;
+  let site: { match: boolean; body: string[] } | null = null;
+  for (const raw of withoutBlock(text).split('\n')) {
+    const line = raw.replace(/(^|\s)#.*$/, '');
+    if (depth === 0) {
+      const head = /^\s*([^{}\s(][^{}]*?)\s*\{\s*$/.exec(line);
+      if (head) {
+        const hosts = head[1]
+          .split(/[\s,]+/)
+          .filter(Boolean)
+          .map(siteHost);
+        site = { match: hosts.includes(domain), body: [] };
+      }
+    } else site?.body.push(line);
+    depth += (line.match(/\{/g)?.length ?? 0) - (line.match(/\}/g)?.length ?? 0);
+    if (depth <= 0) {
+      depth = 0;
+      if (site?.match) return { proxiesHere: proxy.test(site.body.join('\n')) };
+      site = null;
+    }
+  }
+  return null;
 }
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
