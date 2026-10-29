@@ -615,6 +615,9 @@ const electronAPI = {
     /** 列出宿主机目录的可见子目录；不传或路径不存在时从家目录 / 最近的已存在祖先开始 */
     listHostDirs: (path?: string): Promise<HostDirListing> =>
       ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_LIST_HOST_DIRS, path),
+    /** 在宿主机 parent 目录下新建子文件夹，成功时返回新目录的列表 */
+    createHostDir: (parent: string, name: string): Promise<HostDirListing> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PROJECTS_CREATE_HOST_DIR, parent, name),
     /** 在系统文件管理器（或 appId 指定的应用）里打开项目或会话的实际工作目录；ssh 项目返回 unsupported */
     reveal: (request: {
       projectId: string;

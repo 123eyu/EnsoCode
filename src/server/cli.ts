@@ -1,29 +1,46 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { resolve4 } from 'node:dns/promises';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
+import { createInterface as createPromptInterface } from 'node:readline/promises';
 import type { PairStatus } from '@shared/types/pair';
 import type { UpdaterState } from '@shared/types/updater';
 import QRCode from 'qrcode';
+import { CONFIG_FILE, readServerConfig, writeServerConfig } from './config';
 import type { ControlCommand } from './control';
 import { serviceUnit } from './service';
+import { type Prompt, runConfigWizard, type SetupSystem } from './setup/wizard';
+import { DEFAULT_WEB_PORT, parseWebConfig } from './web/config';
 
 export const USAGE = `EnsoCode Server — 无界面宿主，手机 / 浏览器配对后远程使用
 
 用法: enso-server <command>
 
-  start                      前台运行（Ctrl+C 退出）
+  config                     问答式配置连接方式（公共中继 / 内置 web + 反代 / Caddy 自动 https）
+  start [web 参数]            前台运行（Ctrl+C 退出）
   pair                       生成配对二维码与链接，等待设备配对
   devices                    列出已配对设备
   revoke <pairId>            撤销设备
   status                     运行状态、版本与更新
   update                     检查并安装新版本后重启（npm 全局安装时）
-  service install|uninstall  注册 / 移除 systemd 服务（开机自启、崩溃拉起）
+  service install [web 参数]  注册 systemd 服务（开机自启、崩溃拉起）；web 参数写入配置文件
+  service uninstall          移除 systemd 服务
   logs                       跟随 systemd 服务日志
 
-环境变量: ENSO_DATA_DIR（默认 ~/.enso-server）  ENSO_RELAY_URL（自建中继）`;
+内置 web（默认关闭；开启后手机直接访问本机，不经公共中继）:
+  --web                      开启
+  --web-host <addr>          监听地址，默认 127.0.0.1（由反向代理对外提供 https）
+  --web-port <port>          监听端口，默认 ${DEFAULT_WEB_PORT}
+  --public-url <url>         手机访问的地址（反代后的 https 根地址）
+  给出任一 web 参数即视为开启
+
+配置文件: $ENSO_DATA_DIR/${CONFIG_FILE}（\`enso-server config\` 生成，可手改）
+环境变量: ENSO_DATA_DIR（默认 ~/.enso-server）  ENSO_RELAY_URL（自建中继）
+          ENSO_WEB=1  ENSO_WEB_HOST  ENSO_WEB_PORT  ENSO_PUBLIC_URL（同上）
+优先级: 命令行参数 > 环境变量 > 配置文件`;
 
 type Reply = Record<string, unknown> & { ok?: boolean; error?: string };
 
@@ -59,7 +76,7 @@ async function call(socketPath: string, command: ControlCommand): Promise<Reply>
   return reply;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function printDevices(status: PairStatus): void {
   if (!status.devices.length) {
@@ -116,7 +133,11 @@ async function status(socketPath: string): Promise<void> {
   console.log(`状态: 运行中 (pid ${reply.pid})`);
   console.log(`版本: ${reply.version}`);
   console.log(`数据: ${reply.dataDir}`);
-  console.log(`中继: ${pairStatus.relayUrl}`);
+  const configFile = path.join(String(reply.dataDir), CONFIG_FILE);
+  if (existsSync(configFile)) console.log(`配置: ${configFile}`);
+  const web = reply.web as { listen: string; publicUrl: string } | null | undefined;
+  console.log(`中继: ${pairStatus.relayUrl}${web ? '（内置）' : ''}`);
+  if (web) console.log(`Web: 监听 ${web.listen} → ${web.publicUrl}`);
   console.log(`更新: ${updateText}`);
   console.log('设备:');
   printDevices(pairStatus);
@@ -133,6 +154,12 @@ async function update(socketPath: string): Promise<void> {
   else console.log(JSON.stringify(s));
 }
 
+function unitLocation() {
+  const root = process.getuid?.() === 0;
+  const unitDir = root ? '/etc/systemd/system' : path.join(homedir(), '.config/systemd/user');
+  return { root, unitDir, unitFile: path.join(unitDir, 'enso-server.service') };
+}
+
 function systemctl(user: boolean, ...args: string[]): void {
   const result = spawnSync('systemctl', user ? ['--user', ...args] : args, { stdio: 'inherit' });
   if (result.status !== 0) fail(`systemctl ${args.join(' ')} 失败`);
@@ -140,14 +167,15 @@ function systemctl(user: boolean, ...args: string[]): void {
 
 async function service(
   action: string | undefined,
+  flags: string[],
   dataDir: string,
   socketPath: string
 ): Promise<void> {
   if (action !== 'install' && action !== 'uninstall') fail(USAGE);
+  const parsed = parseWebConfig(flags, process.env);
+  if (!parsed.ok) fail(`${parsed.error}\n\n${USAGE}`);
   if (spawnSync('systemctl', ['--version']).status !== 0) fail('需要 systemd');
-  const root = process.getuid?.() === 0;
-  const unitDir = root ? '/etc/systemd/system' : path.join(homedir(), '.config/systemd/user');
-  const unitFile = path.join(unitDir, 'enso-server.service');
+  const { root, unitDir, unitFile } = unitLocation();
   if (action === 'uninstall') {
     if (existsSync(unitFile)) systemctl(!root, 'disable', '--now', 'enso-server');
     rmSync(unitFile, { force: true });
@@ -162,6 +190,14 @@ async function service(
     const value = process.env[key]?.trim();
     if (value) env[key] = value;
   }
+  // web 参数持久化到配置文件，单元里不写死，之后改配置或重跑 config 才能生效
+  if (parsed.web) {
+    const current = readServerConfig(dataDir);
+    if (!current.ok) fail(current.error);
+    const { host, port, localUrl, publicUrl } = parsed.web;
+    const web = { enabled: true, host, port, ...(publicUrl !== localUrl ? { publicUrl } : {}) };
+    console.log(`web 设置已写入 ${writeServerConfig(dataDir, { ...current.config, web })}`);
+  }
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(
     unitFile,
@@ -173,10 +209,90 @@ async function service(
     })
   );
   systemctl(!root, 'daemon-reload');
-  systemctl(!root, 'enable', '--now', 'enso-server');
+  systemctl(!root, 'enable', 'enso-server');
+  // 已在运行时 enable --now 不会重启，新的单元 / 配置不生效
+  systemctl(!root, 'restart', 'enso-server');
   console.log(`已注册并启动 enso-server 服务（${unitFile}）`);
   if (!root) console.log('用户级服务：退出登录后仍要运行，执行 `loginctl enable-linger`');
   console.log('下一步: enso-server pair');
+}
+
+function terminalPrompt(): Prompt {
+  return {
+    async ask(question, fallback) {
+      const rl = createPromptInterface({ input: process.stdin, output: process.stdout });
+      rl.on('SIGINT', () => {
+        process.stdout.write('\n');
+        process.exit(130);
+      });
+      try {
+        const answer = await rl.question(`${question}${fallback ? ` [${fallback}]` : ''}: `);
+        return answer.trim() || fallback || '';
+      } catch {
+        // stdin 关闭（Ctrl+D）
+        process.stdout.write('\n');
+        process.exit(130);
+      } finally {
+        rl.close();
+      }
+    },
+    say: (text) => console.log(text),
+  };
+}
+
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+function hostSystem(dataDir: string, socketPath: string): SetupSystem {
+  const { root, unitFile } = unitLocation();
+  const timeout = () => AbortSignal.timeout(5_000);
+  return {
+    linux: process.platform === 'linux',
+    root,
+    has: (cmd) => spawnSync('sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }).status === 0,
+    exec: (cmd, args) =>
+      spawnSync(cmd, args, {
+        stdio: 'inherit',
+        env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
+      }).status === 0,
+    readFile: (file) => {
+      try {
+        return readFileSync(file, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    writeFile: (file, text) => {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, text);
+    },
+    async publicIp() {
+      for (const url of ['https://api.ipify.org', 'https://ifconfig.me/ip']) {
+        const ip = await fetch(url, { signal: timeout() })
+          .then((res) => (res.ok ? res.text() : ''))
+          .catch(() => '');
+        if (IPV4.test(ip.trim())) return ip.trim();
+      }
+      return null;
+    },
+    resolve4: (host) => resolve4(host),
+    probe: (url) =>
+      fetch(url, { signal: timeout() }).then(
+        (res) => res.ok,
+        () => false
+      ),
+    sleep,
+    serviceInstalled: () => existsSync(unitFile),
+    serverRunning: () => isRunning(socketPath),
+    installService: () => service('install', [], dataDir, socketPath),
+    restartService: () =>
+      spawnSync(
+        'systemctl',
+        root ? ['restart', 'enso-server'] : ['--user', 'restart', 'enso-server'],
+        {
+          stdio: 'inherit',
+        }
+      ).status === 0,
+  };
 }
 
 function logs(): void {
@@ -190,8 +306,12 @@ export async function runCommand(
   argv: string[],
   ctx: { socketPath: string; dataDir: string; version: string }
 ): Promise<boolean> {
-  const [cmd, arg] = argv;
+  const [cmd, arg, ...rest] = argv;
   switch (cmd) {
+    case 'config':
+      if (!process.stdin.isTTY) fail('config 需要在交互式终端里运行');
+      await runConfigWizard(terminalPrompt(), hostSystem(ctx.dataDir, ctx.socketPath), ctx);
+      return true;
     case 'pair':
       await pair(ctx.socketPath);
       return true;
@@ -210,7 +330,7 @@ export async function runCommand(
       await update(ctx.socketPath);
       return true;
     case 'service':
-      await service(arg, ctx.dataDir, ctx.socketPath);
+      await service(arg, rest, ctx.dataDir, ctx.socketPath);
       return true;
     case 'logs':
       logs();

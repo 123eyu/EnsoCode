@@ -1018,6 +1018,8 @@ export const zhTranslations: Record<string, string> = {
   Up: '上级',
   'Use this directory': '选择此目录',
   'No subdirectories': '没有子目录',
+  'Invalid folder name.': '文件夹名称无效。',
+  'Folder name': '文件夹名称',
   'Failed to list remote directory.': '远程目录列取失败。',
   'Requires key-based SSH access. Tools run on the remote host; chat history stays local.':
     '需要免密钥 SSH 访问。工具在远端主机执行,聊天记录保存在本地。',

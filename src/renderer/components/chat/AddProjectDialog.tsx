@@ -42,6 +42,8 @@ type ListDirs = (
   retry: boolean
 ) => Promise<DirPage | { error: string } | null>;
 
+type CreateDir = (parent: string, name: string) => Promise<DirPage | { error: string }>;
+
 const posixParent = (dir: string) => (dir === '/' ? null : dir.replace(/\/[^/]+$/, '') || '/');
 
 function childPath(dir: string, name: string): string {
@@ -52,12 +54,15 @@ function childPath(dir: string, name: string): string {
 /** 内嵌目录浏览：逐级钻取，选中回填路径输入框（避免嵌套 Dialog）；reloadKey 变化时以 retry 重载当前目录 */
 function DirBrowser({
   list,
+  create,
   initialPath,
   reloadKey = 0,
   onSelect,
   onClose,
 }: {
   list: ListDirs;
+  /** 提供时显示“新建文件夹”，建好后直接进入新目录 */
+  create?: CreateDir;
   initialPath?: string;
   reloadKey?: number;
   onSelect: (path: string) => void;
@@ -67,6 +72,8 @@ function DirBrowser({
   const [page, setPage] = React.useState<DirPage | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
+  const [newName, setNewName] = React.useState<string | null>(null);
+  const [createError, setCreateError] = React.useState('');
   const requestSeq = React.useRef(0);
   const pathRef = React.useRef<string | null>(null);
   const listRef = React.useRef(list);
@@ -112,6 +119,31 @@ function DirBrowser({
   const dirs = page?.dirs ?? [];
   const parent = page?.parent ?? null;
 
+  const submitNewFolder = () => {
+    if (!create || !path || newName === null || !newName.trim()) return;
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    setCreateError('');
+    create(path, newName)
+      .then((result) => {
+        if (seq !== requestSeq.current) return;
+        if ('error' in result) {
+          setCreateError(t(result.error));
+          return;
+        }
+        setNewName(null);
+        setError('');
+        setPage(result);
+        pathRef.current = result.path;
+      })
+      .catch(() => {
+        if (seq === requestSeq.current) setCreateError(t('Failed to list remote directory.'));
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false);
+      });
+  };
+
   return (
     <div className="w-full space-y-1.5 rounded-md border bg-muted/30 p-2">
       <div className="flex items-center gap-2">
@@ -128,6 +160,21 @@ function DirBrowser({
         >
           {t('Up')}
         </Button>
+        {create && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            disabled={!path || loading || newName !== null}
+            onClick={() => {
+              setNewName('');
+              setCreateError('');
+            }}
+          >
+            {t('New Folder')}
+          </Button>
+        )}
         <Button
           type="button"
           variant="ghost"
@@ -138,6 +185,52 @@ function DirBrowser({
           {t('Close')}
         </Button>
       </div>
+      {newName !== null && (
+        <div className="space-y-1">
+          <div className="flex items-center gap-1.5">
+            <Input
+              autoFocus
+              size="sm"
+              className="min-w-0 flex-1 font-mono text-xs"
+              placeholder={t('Folder name')}
+              value={newName}
+              disabled={loading}
+              onChange={(event) => setNewName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  submitNewFolder();
+                } else if (event.key === 'Escape') {
+                  // 只收起输入框，不关整个对话框
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setNewName(null);
+                }
+              }}
+            />
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={loading || !newName.trim()}
+              onClick={submitNewFolder}
+            >
+              {t('Create')}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={loading}
+              onClick={() => setNewName(null)}
+            >
+              {t('Cancel')}
+            </Button>
+          </div>
+          {createError && <p className="px-1 text-destructive text-xs">{createError}</p>}
+        </div>
+      )}
       <div className="relative min-h-16 max-h-56 overflow-y-auto">
         {error ? (
           <p className="px-1 py-2 text-destructive text-xs">{error}</p>
@@ -281,6 +374,14 @@ export function AddProjectDialog({
     (target) =>
       window.electronAPI.projects
         .listHostDirs(target)
+        .then((result) => (result.ok ? result : { error: result.error })),
+    []
+  );
+
+  const createHostDir = React.useCallback<CreateDir>(
+    (parent, name) =>
+      window.electronAPI.projects
+        .createHostDir(parent, name)
         .then((result) => (result.ok ? result : { error: result.error })),
     []
   );
@@ -504,6 +605,7 @@ export function AddProjectDialog({
                 {browserOpen && hostBrowse && (
                   <DirBrowser
                     list={listHostDirs}
+                    create={createHostDir}
                     initialPath={pathValue.trim() || undefined}
                     onSelect={(selected) => {
                       setPathValue(selected);
