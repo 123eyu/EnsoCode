@@ -878,6 +878,8 @@ export const IPC_PRODUCT_COVERAGE = {
   EXTENSION_PLUGINS_PICK_AND_STAGE: excluded('桌面专用：弹系统对话框选择插件目录或 zip。'),
   EXTENSION_PLUGINS_CALL: excluded('Enso 插件运行期调用：命令、挂件、侧栏页面与补全。'),
   EXTENSION_PLUGINS_ASSET: excluded('Enso 插件渲染资源读取：只收插件 id 与相对路径。'),
+  EXTENSION_PLUGINS_DRAFT_REQUEST: excluded('Enso 插件草稿请求：Main 推给发起手势的窗口。'),
+  EXTENSION_PLUGINS_DRAFT_RESPONSE: excluded('Enso 插件草稿请求的回包。'),
 } satisfies Record<keyof typeof IPC_CHANNELS, CoverageDisposition>;
 
 export const AUTHORITATIVE_COVERAGE_SOURCES = {

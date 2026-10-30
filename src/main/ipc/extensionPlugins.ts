@@ -3,7 +3,7 @@ import { extname } from 'node:path';
 import { ipcMain } from '@platform';
 import type { ExtensionPluginInstallPreview } from '@shared/extensionPlugins/types';
 import { IPC_CHANNELS } from '@shared/types';
-import { getExtensionPlugins } from '../services/extensionPlugins';
+import { getDraftBroker, getExtensionPlugins } from '../services/extensionPlugins';
 import { broadcastToRenderers } from '../services/renderers';
 import { pluginProjectRoot } from './agent';
 
@@ -79,7 +79,7 @@ export function registerExtensionPluginHandlers(): void {
     return plugins().uninstall(id);
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_CALL, async (_e, raw: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_CALL, async (e, raw: unknown) => {
     if (
       !isRecord(raw) ||
       !isId(raw.pluginId) ||
@@ -95,11 +95,17 @@ export function registerExtensionPluginHandlers(): void {
         payload: raw.payload,
         sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : null,
         projectRoot: typeof raw.sessionId === 'string' ? pluginProjectRoot(raw.sessionId) : null,
+        origin: e.sender.id,
       });
       return { ok: true, value };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_DRAFT_RESPONSE, (e, raw: unknown) => {
+    getDraftBroker().respond(e.sender.id, raw);
+    return { ok: true };
   });
 
   ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_ASSET, (_e, pluginId: unknown, rel: unknown) => {

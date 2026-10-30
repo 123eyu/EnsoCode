@@ -36,6 +36,7 @@ import { useI18n } from '@/i18n';
 import { effectiveKeybindings, eventToBinding, formatBinding } from '@/lib/keybindings';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
+import { registerDraftTarget } from '../../plugins/draftBridge';
 import { PluginComposerSlots } from '../../plugins/slots';
 import {
   registerComposerFocus,
@@ -207,6 +208,18 @@ export function Composer({
   const composerRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
+  useEffect(() => {
+    if (isolated || !focusKey) return;
+    return registerDraftTarget({
+      key: focusKey,
+      segments: () => editorRef.current?.getSegments() ?? [],
+      insertText: (text) => editorRef.current?.insertText(text),
+      setText: (text) => editorRef.current?.setSegments(text ? [{ type: 'text', text }] : []),
+      busy: () => composingRef.current || lockedRef.current || !editorRef.current,
+    });
+  }, [isolated, focusKey]);
   const [popupLayout, setPopupLayout] = useState<{
     left: number;
     flyoutSide: 'left' | 'right';

@@ -512,6 +512,10 @@ export const IPC_CHANNELS = {
   EXTENSION_PLUGINS_CALL: 'extension-plugins:call',
   /** 运行期：按插件 id + 相对路径取渲染资源，渲染层不传磁盘路径 */
   EXTENSION_PLUGINS_ASSET: 'extension-plugins:asset',
+  /** Main → 发起窗口：插件读写草稿的请求；只发给发起手势的那个窗口 */
+  EXTENSION_PLUGINS_DRAFT_REQUEST: 'extension-plugins:draft-request',
+  /** 渲染进程对草稿请求的回包，Main 校验回包窗口与发起窗口一致 */
+  EXTENSION_PLUGINS_DRAFT_RESPONSE: 'extension-plugins:draft-response',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

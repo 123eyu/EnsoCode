@@ -17,13 +17,23 @@ const MAX_REDIRECTS = 5;
 
 export type ComposerOp = 'readDraft' | 'insertText' | 'replaceDraft';
 
+/** 草稿请求的目标：会话 + 发起手势的窗口（webContents id），草稿只回写到发起窗口 */
+export interface ComposerTarget {
+  sessionId: string;
+  origin: number | null;
+}
+
 export interface GateDeps {
   /** 已启用插件的清单；未启用返回 null */
   manifest(pluginId: string): ExtensionPluginManifest | null;
   fetch(url: string, init: RequestInit): Promise<Response>;
   /** 不支持系统通知时返回 false */
   notify(title: string, body: string): boolean;
-  composer(sessionId: string, op: ComposerOp, payload: Record<string, unknown>): Promise<unknown>;
+  composer(
+    target: ComposerTarget,
+    op: ComposerOp,
+    payload: Record<string, unknown>
+  ): Promise<unknown>;
   sessionMessages(sessionId: string): Promise<unknown>;
   now(): number;
 }
@@ -35,6 +45,8 @@ export interface InvocationInit {
   projectRoot: string | null;
   /** 由用户手势触发（命令、挂件、侧栏页面、补全选中） */
   gesture: boolean;
+  /** 发起调用的窗口；只有界面调用才有 */
+  origin?: number | null;
 }
 
 interface Invocation extends InvocationInit {
@@ -159,7 +171,7 @@ export class PluginHostGate {
           (typeof a.text !== 'string' || utf8Bytes(a.text) > MAX_DRAFT_BYTES)
         )
           throw pluginError('INVALID_ARGS', 'text 不合法或超过 32KB');
-        return this.deps.composer(inv.sessionId, op, a);
+        return this.deps.composer({ sessionId: inv.sessionId, origin: inv.origin ?? null }, op, a);
       }
       case 'session.messages': {
         require('session.read');

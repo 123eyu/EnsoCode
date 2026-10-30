@@ -1631,6 +1631,25 @@ const electronAPI = {
       rel: string
     ): Promise<{ ok: true; mime: string; base64: string } | { ok: false; error: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_ASSET, pluginId, rel),
+    onDraftRequest: (
+      callback: (request: {
+        requestId: string;
+        sessionId: string;
+        op: 'readDraft' | 'insertText' | 'replaceDraft';
+        payload: Record<string, unknown>;
+      }) => void
+    ): (() => void) => {
+      const listener = (_e: unknown, request: Parameters<typeof callback>[0]) => callback(request);
+      ipcRenderer.on(IPC_CHANNELS.EXTENSION_PLUGINS_DRAFT_REQUEST, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.EXTENSION_PLUGINS_DRAFT_REQUEST, listener);
+    },
+    respondDraft: (
+      response:
+        | { requestId: string; ok: true; value: unknown }
+        | { requestId: string; ok: false; code: string; error: string }
+    ): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_DRAFT_RESPONSE, response),
   },
 
   /** 仅远程浏览器里的 web-preload 提供 */

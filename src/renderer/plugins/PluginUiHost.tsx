@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useSessionsStore } from '@/stores/sessions';
+import { handleDraftRequest } from './draftBridge';
 import { createRendererDeps, loadPluginRenderer } from './loader';
 
 /** 挂一次：启用插件的渲染模块在宿主页面加载，登记挂点；停用或变更时收回 */
@@ -31,9 +32,16 @@ export function PluginUiHost() {
     };
     reload();
     const unsubscribe = window.electronAPI.extensionPlugins.onChanged(reload);
+    const unsubscribeDraft = window.electronAPI.extensionPlugins.onDraftRequest((request) => {
+      void window.electronAPI.extensionPlugins.respondDraft({
+        requestId: request.requestId,
+        ...handleDraftRequest(request),
+      });
+    });
     return () => {
       generation += 1;
       unsubscribe();
+      unsubscribeDraft();
       for (const handle of handles) handle.dispose();
     };
   }, []);

@@ -1,19 +1,16 @@
 import { join } from 'node:path';
 import { app, notification, pluginHostPath, utilityProcess } from '@platform';
-import type { ComposerOp } from './gate';
+import { IPC_CHANNELS } from '@shared/types';
+import { rendererById } from '../renderers';
+import { DraftBroker } from './draftBroker';
 import { pluginError } from './process';
 import { ExtensionPluginService } from './service';
 
-type ComposerBridge = (
-  sessionId: string,
-  op: ComposerOp,
-  payload: Record<string, unknown>
-) => Promise<unknown>;
 type SessionMessagesReader = (sessionId: string) => Promise<unknown>;
 
 let service: ExtensionPluginService | null = null;
-let composerBridge: ComposerBridge | null = null;
 let sessionMessagesReader: SessionMessagesReader | null = null;
+let draftBroker: DraftBroker | null = null;
 
 const ENV_ALLOWLIST = [
   'PATH',
@@ -38,8 +35,12 @@ export function pluginHostEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env;
 }
 
-export function setComposerBridge(bridge: ComposerBridge | null): void {
-  composerBridge = bridge;
+export function getDraftBroker(): DraftBroker {
+  draftBroker ??= new DraftBroker({
+    channel: IPC_CHANNELS.EXTENSION_PLUGINS_DRAFT_REQUEST,
+    find: rendererById,
+  });
+  return draftBroker;
 }
 
 export function setSessionMessagesReader(reader: SessionMessagesReader | null): void {
@@ -61,10 +62,8 @@ export function getExtensionPlugins(): ExtensionPluginService {
         notification.show({ title, body });
         return true;
       },
-      composer: (sessionId, op, payload) =>
-        composerBridge
-          ? composerBridge(sessionId, op, payload)
-          : Promise.reject(pluginError('UNSUPPORTED', '没有可用的输入框')),
+      composer: (target, op, payload) =>
+        getDraftBroker().request(target.origin, target.sessionId, op, payload),
       sessionMessages: (sessionId) =>
         sessionMessagesReader
           ? sessionMessagesReader(sessionId)

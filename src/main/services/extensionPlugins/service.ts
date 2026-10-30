@@ -315,6 +315,8 @@ export class ExtensionPluginService {
     payload: Record<string, unknown>;
     sessionId: string | null;
     projectRoot: string | null;
+    /** 发起调用的窗口 webContents id，草稿请求只回到这里 */
+    origin?: number | null;
   }): Promise<unknown> {
     const manifest = this.enabledManifest(input.pluginId);
     if (!manifest) throw pluginError('PLUGIN_DISABLED', '插件未启用');
@@ -333,6 +335,7 @@ export class ExtensionPluginService {
         sessionId: input.sessionId,
         projectRoot: input.projectRoot,
         gesture: true,
+        origin: input.origin ?? null,
         timeoutMs: input.method === 'command.run' ? COMMAND_TIMEOUT_MS : UI_TIMEOUT_MS,
       });
       if (Buffer.byteLength(JSON.stringify(value ?? null), 'utf8') > MAX_UI_PAYLOAD_BYTES)
@@ -382,6 +385,7 @@ export class ExtensionPluginService {
       sessionId: string | null;
       projectRoot: string | null;
       gesture: boolean;
+      origin?: number | null;
       timeoutMs: number;
     },
     signal?: AbortSignal
@@ -393,6 +397,7 @@ export class ExtensionPluginService {
       sessionId: ctx.sessionId,
       projectRoot: ctx.projectRoot,
       gesture: ctx.gesture,
+      origin: ctx.origin ?? null,
     });
     const onAbort = () => {
       this.gate.invocations.cancel(invocationId);

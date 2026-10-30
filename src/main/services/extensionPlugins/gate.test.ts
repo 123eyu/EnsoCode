@@ -178,10 +178,24 @@ describe('PluginHostGate', () => {
     });
     const inv = uiCall();
     await gate.handle('a.b', 'composer.readDraft', {}, inv);
-    expect(deps.composer).toHaveBeenCalledWith('s1', 'readDraft', {});
+    expect(deps.composer).toHaveBeenCalledWith({ sessionId: 's1', origin: null }, 'readDraft', {});
     now += 31_000;
     await expect(gate.handle('a.b', 'composer.readDraft', {}, inv)).rejects.toMatchObject({
       code: 'GESTURE_REQUIRED',
+    });
+  });
+
+  it('草稿请求带上发起调用的窗口', async () => {
+    const inv = gate.invocations.create({
+      pluginId: 'a.b',
+      sessionId: 's1',
+      projectRoot: root,
+      gesture: true,
+      origin: 7,
+    });
+    await gate.handle('a.b', 'composer.insertText', { text: 'hi' }, inv);
+    expect(deps.composer).toHaveBeenCalledWith({ sessionId: 's1', origin: 7 }, 'insertText', {
+      text: 'hi',
     });
   });
 
