@@ -48,6 +48,8 @@ const temp = (prefix: string) => {
 let service: ExtensionPluginService;
 let composer: ReturnType<typeof vi.fn<GateDeps['composer']>>;
 let fetchMock: ReturnType<typeof vi.fn<GateDeps['fetch']>>;
+let mcpTools: ReturnType<typeof vi.fn<GateDeps['mcpTools']>>;
+let mcpCall: ReturnType<typeof vi.fn<GateDeps['mcpCall']>>;
 
 beforeEach(() => {
   resetPluginSlots();
@@ -55,6 +57,8 @@ beforeEach(() => {
     op === 'readDraft' ? { text: 'hi', hasReferences: false, generation: 'c1', rev: 'r1' } : null
   );
   fetchMock = vi.fn<GateDeps['fetch']>();
+  mcpTools = vi.fn<GateDeps['mcpTools']>(async () => []);
+  mcpCall = vi.fn<GateDeps['mcpCall']>(async () => ({ content: '', isError: false }));
   service = new ExtensionPluginService({
     root: temp('enso-examples-'),
     hostVersion: '0.2.12',
@@ -66,8 +70,8 @@ beforeEach(() => {
       notify: () => true,
       composer,
       sessionMessages: async () => [],
-      mcpTools: async () => [],
-      mcpCall: async () => ({ content: '', isError: false }),
+      mcpTools,
+      mcpCall,
       now: () => Date.now(),
     },
   });
@@ -220,5 +224,109 @@ describe('示例插件', () => {
       'api.github.com',
       'api.github.com',
     ]);
+  });
+  describe('prompt-enhance（移植自 dsh-bce）', () => {
+    const enhance = (id: string, prompt: string, projectRoot: string | null = '/repo') =>
+      service.callUi({
+        pluginId: id,
+        method: 'renderer.call',
+        payload: { method: 'enhance', args: { prompt } },
+        sessionId: 'c1',
+        projectRoot,
+        origin: 1,
+      });
+
+    it('先增量索引再改写；服务按配置 > 名字含 bce 选择', async () => {
+      const id = await installExample('prompt-enhance');
+      mcpTools.mockResolvedValue([
+        { server: 'other', name: 'enhance_prompt', description: '' },
+        { server: 'my-bce', name: 'enhance_prompt', description: '' },
+        { server: 'my-bce', name: 'search_context', description: '' },
+      ]);
+      mcpCall.mockImplementation(async (_t, _s, tool) =>
+        tool === 'enhance_prompt'
+          ? { content: '  better prompt  ', isError: false }
+          : { content: 'indexed', isError: false }
+      );
+      await expect(enhance(id, ' fix the bug ')).resolves.toEqual({
+        ok: true,
+        text: 'better prompt',
+      });
+      expect(mcpCall.mock.calls.map(([, server, tool, args]) => [server, tool, args])).toEqual([
+        ['my-bce', 'search_context', { project_root_path: '/repo', query: 'fix the bug' }],
+        [
+          'my-bce',
+          'enhance_prompt',
+          { project_root_path: '/repo', prompt: 'fix the bug', conversation_history: '' },
+        ],
+      ]);
+
+      service.setConfig(id, { server: 'other' });
+      mcpCall.mockClear();
+      await expect(enhance(id, 'x')).resolves.toEqual({
+        ok: true,
+        text: 'better prompt',
+        warning: 'no_index',
+      });
+      expect(mcpCall.mock.calls.map(([, server, tool]) => [server, tool])).toEqual([
+        ['other', 'enhance_prompt'],
+      ]);
+    });
+
+    it('没有项目、没有 MCP、索引失败时给出可读的错误码', async () => {
+      const id = await installExample('prompt-enhance');
+      await expect(enhance(id, 'x', null)).resolves.toMatchObject({
+        ok: false,
+        code: 'no_workspace',
+      });
+      await expect(enhance(id, 'x')).resolves.toMatchObject({ ok: false, code: 'mcp_missing' });
+      mcpTools.mockResolvedValue([
+        { server: 'bce', name: 'enhance_prompt', description: '' },
+        { server: 'bce', name: 'search_context', description: '' },
+      ]);
+      mcpCall.mockResolvedValue({ content: 'Error: path is not a git repository', isError: true });
+      await expect(enhance(id, 'x')).resolves.toMatchObject({ ok: false, code: 'not_git' });
+      mcpCall.mockRejectedValue(Object.assign(new Error('MCP 调用超时'), { code: 'TIMEOUT' }));
+      await expect(enhance(id, 'x')).resolves.toMatchObject({ ok: false, code: 'index_timeout' });
+    });
+
+    it('界面：按读取时的版本替换草稿，草稿被改过就不覆盖', async () => {
+      const { enhanceDraft } = await import(
+        pathToFileURL(join(EXAMPLES, 'prompt-enhance', 'ui.js')).href
+      );
+      const replaceDraft = vi.fn(async () => ({ rev: 'r2' }));
+      const enso = {
+        composer: {
+          readDraft: async () => ({
+            text: 'fix it',
+            generation: 'c1',
+            rev: 'r1',
+            hasReferences: false,
+          }),
+          replaceDraft,
+        },
+        dispatch: vi.fn(async () => ({ ok: true, text: 'better' })),
+      };
+      await expect(enhanceDraft(enso, 'c1')).resolves.toMatchObject({
+        ok: true,
+        original: 'fix it',
+        enhanced: 'better',
+      });
+      expect(enso.dispatch).toHaveBeenCalledWith('plugin.call', {
+        method: 'enhance',
+        args: { prompt: 'fix it' },
+      });
+      expect(replaceDraft).toHaveBeenCalledWith({
+        text: 'better',
+        expect: { generation: 'c1', rev: 'r1' },
+      });
+      replaceDraft.mockRejectedValueOnce(
+        Object.assign(new Error('changed'), { code: 'DRAFT_CHANGED' })
+      );
+      await expect(enhanceDraft(enso, 'c1')).resolves.toEqual({
+        ok: false,
+        message: '增强期间草稿被改过，没有替换',
+      });
+    });
   });
 });
