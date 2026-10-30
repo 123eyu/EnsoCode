@@ -195,6 +195,7 @@ import {
   resetOauthPoolActivity,
   resolveOauthPoolModel,
 } from './oauthAccountPool';
+import { PendingNotificationStore } from './pendingNotifications';
 import { createSubmitPlanTool, PlanController, withPlanGate } from './planMode';
 import {
   configurePrivacyMasking,
@@ -936,6 +937,7 @@ export class SessionSupervisor {
   private readonly notifier = new ParentNotifier((sessionId, text) => {
     this.deliverNotification(sessionId, text);
   });
+  private readonly pendingNotifications: PendingNotificationStore;
   private readonly completeTextAborts = new Map<string, AbortController>();
   private readonly completeTextPendingAborts = new Set<string>();
   private readonly classifyAborts = new Map<string, AbortController>();
@@ -983,6 +985,11 @@ export class SessionSupervisor {
         `[notify] pending reminders exceeded ${REMINDER_QUEUE_LIMIT}; oldest dropped for ${managed.identity.sessionId}`
       );
     }
+    this.persistPendingReminders(managed);
+  }
+
+  private persistPendingReminders(managed: ManagedSession): void {
+    this.pendingNotifications.save(managed.identity.sessionId, managed.pendingTaskReminders);
   }
 
   /** 回合收口后补投攒下的通知（中止后 pi 收尾期间被拒的 prompt 也在这里） */
@@ -991,11 +998,15 @@ export class SessionSupervisor {
     setTimeout(() => {
       if (managed.status === 'running' || managed.pendingTaskReminders.length === 0) return;
       const texts = managed.pendingTaskReminders.splice(0);
+      this.persistPendingReminders(managed);
       this.deliverNotification(managed.identity.sessionId, texts.join('\n\n---\n\n'));
     }, 150);
   }
 
   constructor(private readonly options: SupervisorOptions) {
+    this.pendingNotifications = new PendingNotificationStore(
+      path.join(options.sessionDir, 'pending-notifications')
+    );
     this.bgTasks = new BackgroundTaskManager(
       {
         onStarted: (sessionId, task) => {
@@ -2180,7 +2191,12 @@ export class SessionSupervisor {
     // 后包审批门（审批先问，批准后分流后台），edit 叠宽容版，MCP 同门，todo/task_* 免审。
     // 最外层 decorateSessionTools：引用 / 输出外置 / runaway / system reminder
     type Def = Parameters<typeof withApproval>[2];
-    const takePendingReminders = () => managedRef?.pendingTaskReminders.splice(0) ?? [];
+    const takePendingReminders = () => {
+      if (!managedRef || managedRef.pendingTaskReminders.length === 0) return [];
+      const taken = managedRef.pendingTaskReminders.splice(0);
+      this.persistPendingReminders(managedRef);
+      return taken;
+    };
     const reminders = new SystemReminderRegistry();
     reminders.register('background-task', () => {
       const pending = takePendingReminders();
@@ -2991,7 +3007,8 @@ export class SessionSupervisor {
       toolDurations: new Map(),
       gate,
       asks: opts.asks ?? this.createAskManager(identity, gate.humanTimeoutMs),
-      pendingTaskReminders: [],
+      // 上次进程退出前没投出去的通知：恢复后随下一次工具结果或回合收口补投
+      pendingTaskReminders: this.pendingNotifications.load(identity.sessionId),
       roundWaiters: new Set(),
       coworkers: new Map(),
       lastActivityAt: Date.now(),
