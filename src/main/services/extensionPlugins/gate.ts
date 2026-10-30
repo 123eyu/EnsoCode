@@ -114,7 +114,7 @@ export class PluginHostGate {
     const manifest = this.deps.manifest(pluginId);
     if (!manifest) throw pluginError('PLUGIN_DISABLED', '插件未启用');
     const a = isRecord(args) ? args : {};
-    const require = (permission: ExtensionPluginPermission) => {
+    const permit = (permission: ExtensionPluginPermission) => {
       if (!manifest.permissions.includes(permission))
         throw pluginError('PERMISSION_DENIED', `插件未获授权：${permission}`);
     };
@@ -128,7 +128,7 @@ export class PluginHostGate {
 
     switch (api) {
       case 'fs.readText': {
-        require('fs.read');
+        permit('fs.read');
         const target = await this.resolveProjectPath(invocation(), a.path, manifest.fs.read, false);
         const info = await stat(target);
         if (!info.isFile()) throw pluginError('INVALID_ARGS', '不是文件');
@@ -136,7 +136,7 @@ export class PluginHostGate {
         return readFile(target, 'utf8');
       }
       case 'fs.writeText': {
-        require('fs.write');
+        permit('fs.write');
         if (typeof a.text !== 'string' || utf8Bytes(a.text) > MAX_FILE_BYTES)
           throw pluginError('INVALID_ARGS', 'text 不合法或过大');
         const inv = invocation();
@@ -146,10 +146,10 @@ export class PluginHostGate {
         return null;
       }
       case 'net.fetch':
-        require('net.fetch');
+        permit('net.fetch');
         return this.fetch(manifest, a);
       case 'ui.notify': {
-        require('ui.notify');
+        permit('ui.notify');
         if (typeof a.title !== 'string' || a.title.length === 0 || a.title.length > 200)
           throw pluginError('INVALID_ARGS', 'title 不合法');
         const body = typeof a.body === 'string' ? a.body.slice(0, 1000) : '';
@@ -160,7 +160,7 @@ export class PluginHostGate {
       case 'composer.readDraft':
       case 'composer.insertText':
       case 'composer.replaceDraft': {
-        require('composer.draft');
+        permit('composer.draft');
         const inv = invocation();
         if (!inv.gesture || this.deps.now() - inv.createdAt > GESTURE_TTL_MS)
           throw pluginError('GESTURE_REQUIRED', '只能在用户操作触发的调用里读写草稿');
@@ -174,7 +174,7 @@ export class PluginHostGate {
         return this.deps.composer({ sessionId: inv.sessionId, origin: inv.origin ?? null }, op, a);
       }
       case 'session.messages': {
-        require('session.read');
+        permit('session.read');
         const inv = invocation();
         if (!inv.sessionId) throw pluginError('NO_SESSION', '调用不属于任何会话');
         return this.deps.sessionMessages(inv.sessionId);
