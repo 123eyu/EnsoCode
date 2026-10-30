@@ -1,5 +1,7 @@
 # Enso 插件示例
 
+完整的清单字段、接口、挂点和错误码见 [插件开发文档](../../docs/plugins.md)。
+
 每个目录是一个可直接安装的插件：设置 → 插件 → Enso plugins → 安装目录；
 服务端用 `enso-server plugin install examples/plugins/<name>`，再 `enso-server plugin enable <id>`。
 
