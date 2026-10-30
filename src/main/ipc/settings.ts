@@ -478,6 +478,7 @@ function scheduleWrite(
           pushAutoRetryLimit,
           pushPrivacyMasking,
           pushDisabledWorkflowPresets,
+          pushBuiltinTools,
           pushModelDirectory,
           pushWebSearchConfig,
         }) => {
@@ -487,6 +488,7 @@ function scheduleWrite(
           pushAutoRetryLimit();
           pushPrivacyMasking();
           pushDisabledWorkflowPresets();
+          pushBuiltinTools();
           pushModelDirectory();
           pushWebSearchConfig();
         }
@@ -604,6 +606,7 @@ export function commitSettingsTransaction(
         pushAutoRetryLimit,
         pushPrivacyMasking,
         pushDisabledWorkflowPresets,
+        pushBuiltinTools,
         pushModelDirectory,
         pushWebSearchConfig,
       }) => {
@@ -613,6 +616,7 @@ export function commitSettingsTransaction(
         pushAutoRetryLimit();
         pushPrivacyMasking();
         pushDisabledWorkflowPresets();
+        pushBuiltinTools();
         pushModelDirectory();
         pushWebSearchConfig();
       }

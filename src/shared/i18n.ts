@@ -614,8 +614,8 @@ export const zhTranslations: Record<string, string> = {
   'Open sessions keep the previous setting; it applies once you start a new session.':
     '已打开的会话保持原设置，新建会话后生效。',
   'Settings without this tag take effect immediately.': '没有此标签的设置修改后立即生效。',
-  'Turning a tool on applies to new sessions. Turning off Memory or Computer also blocks it in open sessions.':
-    '开启工具只对新会话生效；关闭记忆或电脑操控会同时在已打开的会话中拦截。',
+  'Isolated sandbox switches between script and tool-search mode, so open sessions keep the mode they started with.':
+    '隔离沙箱决定会话用脚本模式还是工具检索模式，已打开的会话保持启动时的模式。',
   'The / menu updates right away, but open sessions keep the skills they loaded. Start a new session to load the change.':
     '输入框的 / 菜单会立即更新，但已打开的会话仍使用原来加载的技能，新建会话后才会加载改动。',
   'The file panel and terminal use the change right away. Agents in open sessions keep the previous connection settings.':
@@ -1688,9 +1688,10 @@ export const zhTranslations: Record<string, string> = {
     '电脑操控需要屏幕录制才能截窗，需要辅助功能才能读无障碍树或点击。请把这两项授权给 EnsoCode，然后重启应用。',
   'Grant Computer permissions': '授权电脑操控权限',
   'Show permission guide': '打开权限引导',
-  'The agent can screenshot windows and control the mouse and keyboard. Grant Screen Recording and Accessibility to EnsoCode, then restart. Only new sessions pick up the tool.':
-    'Agent 可以截取窗口并控制键鼠。请把屏幕录制和辅助功能授权给 EnsoCode，然后重启。只有新会话会拿到这个工具。',
-  'Computer is ready. Start a new session to use it.': '电脑操控已就绪。开一个新会话即可使用。',
+  'The agent can screenshot windows and control the mouse and keyboard. Grant Screen Recording and Accessibility to EnsoCode, then restart.':
+    'Agent 可以截取窗口并控制键鼠。请把屏幕录制和辅助功能授权给 EnsoCode，然后重启。',
+  'Computer is ready. Open sessions can use it from their next step.':
+    '电脑操控已就绪。已打开的会话从下一步起即可使用。',
   'Capture: granted': '截屏:已授权',
   'Capture: denied': '截屏:未授权',
   'Input/AX: granted': '键鼠/AX:已授权',

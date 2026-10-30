@@ -95,7 +95,8 @@ function ToolRow({
   control?: ReactNode;
   children?: ReactNode;
   rowId?: string;
-  newSession?: boolean;
+  /** 只对新会话生效；字符串为徽标说明 */
+  newSession?: boolean | string;
 }) {
   return (
     <div className="rounded-md border px-3 py-2.5" data-settings-row={rowId}>
@@ -104,7 +105,9 @@ function ToolRow({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">
             {title}
-            {newSession && <NewSessionBadge />}
+            {newSession && (
+              <NewSessionBadge note={typeof newSession === 'string' ? newSession : undefined} />
+            )}
           </p>
           <p className="text-muted-foreground text-xs">{description}</p>
         </div>
@@ -297,11 +300,6 @@ export function BuiltinToolsSettings() {
         <h3 className="font-medium text-lg">
           {t('Built-in tools')}
           <OccupancyEnabledTotal tokens={enabledTokens} />
-          <NewSessionBadge
-            note={t(
-              'Turning a tool on applies to new sessions. Turning off Memory or Computer also blocks it in open sessions.'
-            )}
-          />
         </h3>
         <p className="text-muted-foreground text-sm">
           {t('Toggle the built-in tools available to agents.')}
@@ -315,6 +313,13 @@ export function BuiltinToolsSettings() {
             icon={TOOL_ICON[tool.id] ?? Wrench}
             title={t(tool.name)}
             description={t(tool.description)}
+            newSession={
+              tool.id === 'isolated_sandbox'
+                ? t(
+                    'Isolated sandbox switches between script and tool-search mode, so open sessions keep the mode they started with.'
+                  )
+                : undefined
+            }
             control={
               <>
                 <OccupancyMark
@@ -544,9 +549,9 @@ function ComputerPermissionGuideDialog({
             {kind === 'unsupported'
               ? t('This platform cannot operate the desktop yet.')
               : kind === 'ready'
-                ? t('Computer is ready. Start a new session to use it.')
+                ? t('Computer is ready. Open sessions can use it from their next step.')
                 : t(
-                    'The agent can screenshot windows and control the mouse and keyboard. Grant Screen Recording and Accessibility to EnsoCode, then restart. Only new sessions pick up the tool.'
+                    'The agent can screenshot windows and control the mouse and keyboard. Grant Screen Recording and Accessibility to EnsoCode, then restart.'
                   )}
           </DialogDescription>
         </DialogHeader>
