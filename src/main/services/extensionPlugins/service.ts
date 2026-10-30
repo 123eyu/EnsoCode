@@ -109,6 +109,7 @@ export class ExtensionPluginService {
           views: manifest.contributes.views.map(({ id, title }) => ({ id, title })),
           triggers: manifest.contributes.triggers,
           hasRenderer: manifest.renderer !== undefined,
+          ...(manifest.renderer ? { renderer: manifest.renderer } : {}),
           ...(record.pending && pending
             ? { pendingVersion: record.pending.version, pendingPermissions: pending.permissions }
             : {}),

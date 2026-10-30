@@ -98,6 +98,7 @@ import {
 } from '@/stores/sessions/timeline';
 import { useSettingsStore } from '@/stores/settings';
 import { useSubagentRunsStore } from '@/stores/subagentRuns';
+import { PluginMessageActions, PluginToolCardSlot } from '../../plugins/slots';
 import { AskUserResult } from './AskUserResult';
 import { CodeBlock } from './CodeBlock';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -783,7 +784,12 @@ export const TimelineRow = memo(function TimelineRow({
         />
       );
     case 'tool':
-      return <ToolRow item={item} />;
+      return (
+        <>
+          <PluginToolCardSlot name={item.name} output={item.output} state={item.state} />
+          <ToolRow item={item} />
+        </>
+      );
     case 'tool-group':
       return <ToolGroupRow item={item} onToggle={onToggleGroup} />;
     case 'error':
@@ -1295,6 +1301,7 @@ function TextRow({
       {!item.streaming && (
         <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
           <CopyButton text={item.text} />
+          <PluginMessageActions position="right" />
           {item.turnEnd && <ForkButton messageIndex={Number(item.key.split('-')[0])} />}
           {item.timestamp && <span>{formatClock(item.timestamp)}</span>}
           {item.turnDurationMs !== undefined && (

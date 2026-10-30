@@ -13,6 +13,8 @@ export interface ExtensionPluginSummary {
   views: { id: string; title: string }[];
   triggers: { symbol: PluginTriggerSymbol; name: string }[];
   hasRenderer: boolean;
+  /** 渲染模块相对路径；渲染层经 asset 通道取源码，不是磁盘路径 */
+  renderer?: string;
   pendingVersion?: string;
   pendingPermissions?: ExtensionPluginPermission[];
 }

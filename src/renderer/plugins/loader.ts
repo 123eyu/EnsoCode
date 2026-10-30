@@ -1,0 +1,94 @@
+import { type ComponentType, createElement, type ReactElement } from 'react';
+import { clearPluginSlots, type PluginSlotEntry, registerPluginSlot } from './registry';
+
+export interface PluginRendererDeps {
+  importModule(pluginId: string, rel: string): Promise<{ onLoad?: (enso: unknown) => unknown }>;
+  react: unknown;
+  sessionId(): string | null;
+  call(pluginId: string, method: string, args: unknown, sessionId: string | null): Promise<unknown>;
+}
+
+async function importAssetModule(
+  pluginId: string,
+  rel: string
+): Promise<{ onLoad?: (enso: unknown) => unknown }> {
+  const res = await window.electronAPI.extensionPlugins.asset(pluginId, rel);
+  if (!res.ok) throw new Error(res.error);
+  const bytes = Uint8Array.from(atob(res.base64), (char) => char.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' }));
+  try {
+    return (await import(/* @vite-ignore */ url)) as { onLoad?: (enso: unknown) => unknown };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** 渲染进程里的默认依赖：从 Main 取模块源码，调用经 extensionPlugins.call 回去 */
+export function createRendererDeps(sessionId: () => string | null): PluginRendererDeps {
+  return {
+    react: { createElement },
+    sessionId,
+    importModule: importAssetModule,
+    call: async (pluginId, method, args, sid) => {
+      const result = await window.electronAPI.extensionPlugins.call({
+        pluginId,
+        method: 'renderer.call',
+        payload: { method, args },
+        sessionId: sid,
+      });
+      if (!result.ok) throw new Error(result.error);
+      return result.value;
+    },
+  };
+}
+
+/**
+ * 加载一个插件的渲染模块。模块在宿主页面里运行（完全信任，见设计第 1 节），
+ * `onLoad` 里用 `enso.slots.register` 登记挂点；卸载时全部收回。
+ */
+export async function loadPluginRenderer(
+  pluginId: string,
+  rel: string,
+  deps: PluginRendererDeps
+): Promise<{ dispose(): void }> {
+  const mod = await deps.importModule(pluginId, rel);
+  if (typeof mod.onLoad !== 'function') throw new Error('插件渲染模块没有导出 onLoad');
+  const disposers: (() => void)[] = [];
+  const enso = {
+    React: deps.react,
+    slots: {
+      register: (registration: Omit<PluginSlotEntry, 'pluginId'>) => {
+        const dispose = registerPluginSlot({ ...registration, pluginId });
+        disposers.push(dispose);
+        return dispose;
+      },
+    },
+    dispatch: (action: string, payload: Record<string, unknown>) => {
+      if (action !== 'plugin.call') throw new Error(`未知动作 ${action}`);
+      return deps.call(pluginId, String(payload.method ?? ''), payload.args, deps.sessionId());
+    },
+  };
+  try {
+    const returned = await mod.onLoad(enso);
+    if (typeof returned === 'function') disposers.push(returned as () => void);
+  } catch (error) {
+    for (const dispose of disposers) dispose();
+    throw error;
+  }
+  return {
+    dispose() {
+      for (const dispose of disposers.splice(0)) dispose();
+      clearPluginSlots(pluginId);
+    },
+  };
+}
+
+export function PluginSlotView({
+  entry,
+  props,
+}: {
+  entry: PluginSlotEntry;
+  props: Record<string, unknown>;
+}): ReactElement {
+  return createElement(entry.component as ComponentType<Record<string, unknown>>, props);
+}
