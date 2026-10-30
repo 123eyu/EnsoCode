@@ -21,4 +21,31 @@ describe('parseControlCommand', () => {
     expect(parseControlCommand('nope')).toEqual({ error: 'invalid json' });
     expect(parseControlCommand('{"cmd":"quit"}')).toEqual({ error: 'unknown command' });
   });
+
+  it('插件命令：按动作校验参数', () => {
+    const parse = (v: unknown) => parseControlCommand(JSON.stringify(v));
+    expect(parse({ cmd: 'plugin', action: 'list' })).toEqual({ cmd: 'plugin', action: 'list' });
+    expect(parse({ cmd: 'plugin', action: 'stage', path: '/srv/p.zip' })).toEqual({
+      cmd: 'plugin',
+      action: 'stage',
+      path: '/srv/p.zip',
+    });
+    expect(parse({ cmd: 'plugin', action: 'stage', path: 'rel/p' })).toEqual({
+      error: 'plugin stage requires an absolute path',
+    });
+    expect(parse({ cmd: 'plugin', action: 'commit', token: 't1' })).toEqual({
+      cmd: 'plugin',
+      action: 'commit',
+      token: 't1',
+    });
+    expect(parse({ cmd: 'plugin', action: 'enable', id: 'a.b' })).toEqual({
+      cmd: 'plugin',
+      action: 'enable',
+      id: 'a.b',
+    });
+    expect(parse({ cmd: 'plugin', action: 'enable' })).toEqual({
+      error: 'plugin enable requires id',
+    });
+    expect(parse({ cmd: 'plugin', action: 'explode' })).toEqual({ error: 'unknown plugin action' });
+  });
 });
