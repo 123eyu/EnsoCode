@@ -201,4 +201,44 @@ describe('ExtensionPluginService', () => {
     expect((await service.commit(preview.preview.token)).ok).toBe(true);
     expect((await service.commit(preview.preview.token)).ok).toBe(false);
   });
+
+  it('启用后下发 skills 与 MCP：服务名加前缀，插件根占位符展开为安装目录', async () => {
+    await install({
+      'enso-plugin.json': manifest({
+        permissions: ['agent.tool', 'mcp.server'],
+        contributes: {
+          agentTools: [{ name: 'lookup', description: '查询', parameters: { type: 'object' } }],
+          skills: ['skills/demo'],
+          mcpServers: [
+            {
+              name: 'srv',
+              command: 'node',
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: 清单占位符
+              args: ['${ENSO_PLUGIN_ROOT}/server.js'],
+              env: { MODE: 'x' },
+            },
+          ],
+        },
+      }),
+      'main.mjs': mainJs,
+      'skills/demo/SKILL.md': '# demo',
+      'server.js': '',
+    });
+    expect(service.skillPathsForSpawn()).toEqual([]);
+    expect(service.mcpServersForSpawn()).toEqual([]);
+    service.setEnabled('example.demo', true);
+    const [skill] = service.skillPathsForSpawn();
+    expect(skill?.endsWith('skills/demo')).toBe(true);
+    const [server] = service.mcpServersForSpawn();
+    expect(server).toMatchObject({
+      name: 'plugin-example-demo-srv',
+      transport: 'stdio',
+      command: 'node',
+      env: {
+        MODE: 'x',
+        ENSO_PLUGIN_ROOT: expect.stringContaining(join(root, 'packages', 'example.demo')),
+      },
+    });
+    expect(server?.args?.[0]).toMatch(/packages\/example\.demo\/[^/]+\/server\.js$/);
+  });
 });

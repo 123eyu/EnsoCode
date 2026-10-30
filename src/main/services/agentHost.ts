@@ -107,6 +107,7 @@ import { agentCommandDispatch } from './agentCommandDispatch';
 import { type MemberAgentType, memberSpawnDescription } from './bots/botAgentType';
 import type { ResolvedPlugins } from './claudePlugins';
 import { isComputerPlatformSupported } from './computer/support';
+import { getExtensionPlugins } from './extensionPlugins';
 import { resolveGlobalInstruction } from './instructionStore';
 import { refreshMcpOAuthAccess } from './mcpOAuthRefresh';
 import { getMcpOAuthStore } from './mcpOAuthStore';
@@ -899,13 +900,23 @@ export function spawnSession(
   const state = readSettingsState();
   // Claude 插件：按各自开关现读安装目录，不受预设影响
   const plugins = enabledPlugins(state);
-  const skillPaths = [...enabledSkillPaths(preset), ...(bot ? [] : plugins.skillPaths)];
+  // Enso 插件：顺序在预设、Claude 插件之后；Bot 会话不合并
+  const extensionPlugins = bot ? null : getExtensionPlugins();
+  const skillPaths = [
+    ...enabledSkillPaths(preset),
+    ...(bot ? [] : plugins.skillPaths),
+    ...(extensionPlugins?.skillPathsForSpawn() ?? []),
+  ];
   const mcpServers = enabledMcpServers(preset);
   const mcpNames = new Set(mcpServers.map((server) => server.name));
-  for (const server of bot ? [] : plugins.mcpServers) {
+  for (const server of [
+    ...(bot ? [] : plugins.mcpServers),
+    ...(extensionPlugins?.mcpServersForSpawn() ?? []),
+  ]) {
     if (!mcpNames.has(server.name)) mcpServers.push(server);
     mcpNames.add(server.name);
   }
+  const pluginTools = extensionPlugins?.toolsForSpawn() ?? [];
   // hooks 在本机起进程，远程会话的 cwd 不在本机
   const pluginHooks = remote ? [] : plugins.hooks;
   const subagentModels = options?.omitDispatchTools
@@ -975,6 +986,7 @@ export function spawnSession(
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     ...(plugins.commands.length > 0 ? { pluginCommands: plugins.commands } : {}),
     ...(pluginHooks.length > 0 ? { pluginHooks } : {}),
+    ...(pluginTools.length > 0 ? { pluginTools } : {}),
     ...(request.approvalMode ? { approvalMode: request.approvalMode } : {}),
     ...(request.planMode !== undefined ? { planMode: request.planMode } : {}),
     ...(approvalReviewerConfig ? { approvalReviewer: approvalReviewerConfig } : {}),
@@ -1188,6 +1200,14 @@ export function sendComputerResultToSession(
   outcome: { ok: true; result: unknown } | { ok: false; error: string }
 ): { ok: boolean; error?: string } {
   return sendAgentCommand({ type: 'computer-result', identity, requestId, ...outcome });
+}
+
+export function sendPluginToolResultToSession(
+  identity: SessionIdentity,
+  requestId: string,
+  outcome: { ok: true; result: unknown } | { ok: false; error: string }
+): { ok: boolean; error?: string } {
+  return sendAgentCommand({ type: 'plugin-tool-result', identity, requestId, ...outcome });
 }
 
 export function sendCapabilityResultToSession(

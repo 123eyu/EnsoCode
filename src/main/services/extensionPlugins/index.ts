@@ -1,0 +1,77 @@
+import { join } from 'node:path';
+import { app, notification, pluginHostPath, utilityProcess } from '@platform';
+import type { ComposerOp } from './gate';
+import { pluginError } from './process';
+import { ExtensionPluginService } from './service';
+
+type ComposerBridge = (
+  sessionId: string,
+  op: ComposerOp,
+  payload: Record<string, unknown>
+) => Promise<unknown>;
+type SessionMessagesReader = (sessionId: string) => Promise<unknown>;
+
+let service: ExtensionPluginService | null = null;
+let composerBridge: ComposerBridge | null = null;
+let sessionMessagesReader: SessionMessagesReader | null = null;
+
+const ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LANG',
+  'LC_ALL',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SystemRoot',
+  'windir',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+];
+
+/** 插件进程不继承 Main 的环境变量，只给运行 Node 必需的几项 */
+export function pluginHostEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ENV_ALLOWLIST) if (source[key] !== undefined) env[key] = source[key];
+  return env;
+}
+
+export function setComposerBridge(bridge: ComposerBridge | null): void {
+  composerBridge = bridge;
+}
+
+export function setSessionMessagesReader(reader: SessionMessagesReader | null): void {
+  sessionMessagesReader = reader;
+}
+
+export function getExtensionPlugins(): ExtensionPluginService {
+  if (service) return service;
+  service = new ExtensionPluginService({
+    root: join(app.getPath('userData'), 'extension-plugins'),
+    hostVersion: app.getVersion(),
+    hostPath: pluginHostPath,
+    env: pluginHostEnv(process.env),
+    fork: (modulePath, args, options) => utilityProcess.fork(modulePath, args, options),
+    gate: {
+      fetch: (url, init) => fetch(url, init),
+      notify: (title, body) => {
+        if (!notification.isSupported()) return false;
+        notification.show({ title, body });
+        return true;
+      },
+      composer: (sessionId, op, payload) =>
+        composerBridge
+          ? composerBridge(sessionId, op, payload)
+          : Promise.reject(pluginError('UNSUPPORTED', '没有可用的输入框')),
+      sessionMessages: (sessionId) =>
+        sessionMessagesReader
+          ? sessionMessagesReader(sessionId)
+          : Promise.reject(pluginError('UNSUPPORTED', '无法读取会话')),
+      now: Date.now,
+    },
+  });
+  app.on('before-quit', () => service?.dispose());
+  return service;
+}

@@ -21,6 +21,8 @@ import {
 } from '../capabilities/types';
 import { type CompactStrategy, parseCompactStrategy } from '../compactStrategy';
 import type { DefaultModelRef } from '../defaultModel';
+import { parsePluginToolName } from '../extensionPlugins/toolName';
+import type { PluginToolDescriptor } from '../extensionPlugins/types';
 import { parseMaxActiveCoworkers } from '../maxActiveCoworkers';
 import {
   isCodexAccountKey,
@@ -1132,6 +1134,8 @@ export type AgentCommand =
       pluginCommands?: PluginCommandSpawn[];
       /** 已启用 Claude 插件的 command hooks；远程会话不下发 */
       pluginHooks?: PluginHookSpawn[];
+      /** 已启用 Enso 插件的 agent 工具；执行经 plugin-tool-invoke 回到 Main */
+      pluginTools?: PluginToolDescriptor[];
       instruction?: { path: string; content: string };
       approvalMode?: ApprovalMode;
       /** 助手代审模型；仅 approvalMode=assistant 时有意义 */
@@ -1300,6 +1304,14 @@ export type AgentCommand =
   | {
       type: 'computer-result';
       identity: SessionIdentity | ChildSessionIdentity;
+      requestId: string;
+      ok: boolean;
+      result?: unknown;
+      error?: string;
+    }
+  | {
+      type: 'plugin-tool-result';
+      identity: SessionIdentity;
       requestId: string;
       ok: boolean;
       result?: unknown;
@@ -1634,7 +1646,9 @@ export type RendererAgentEvent =
               | 'agent-control-invoke'
               | 'agent-control-cancel'
               | 'computer-invoke'
-              | 'computer-cancel';
+              | 'computer-cancel'
+              | 'plugin-tool-invoke'
+              | 'plugin-tool-cancel';
           }
         >
       | { type: 'session-reloaded' }
@@ -1870,6 +1884,15 @@ export type AgentWorkerEvent =
       seq: number;
       requestId: string;
     }
+  | {
+      type: 'plugin-tool-invoke';
+      identity: SessionIdentity;
+      seq: number;
+      requestId: string;
+      toolName: string;
+      args: unknown;
+    }
+  | { type: 'plugin-tool-cancel'; identity: SessionIdentity; seq: number; requestId: string }
   | { type: 'task-started'; identity: SessionIdentity; seq: number; task: BackgroundTaskInfo }
   | {
       /** 标题总结完成：无 identity/seq（不属于任何 worker 会话），渲染层按 conversationId 写回 */
@@ -1973,6 +1996,26 @@ const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[])
 
 const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length && hasOnlyKeys(value, keys);
+
+function isPluginToolList(value: unknown): value is PluginToolDescriptor[] {
+  if (!Array.isArray(value) || value.length > 200) return false;
+  const names = new Set<string>();
+  for (const tool of value) {
+    if (
+      !isRecord(tool) ||
+      !hasExactKeys(tool, ['name', 'description', 'parameters', 'pluginId']) ||
+      typeof tool.name !== 'string' ||
+      typeof tool.description !== 'string' ||
+      tool.description.length > 1024 ||
+      !isRecord(tool.parameters) ||
+      parsePluginToolName(tool.name)?.pluginId !== tool.pluginId ||
+      names.has(tool.name)
+    )
+      return false;
+    names.add(tool.name);
+  }
+  return true;
+}
 
 const isMcpScopeChallenge = (value: unknown): value is McpScopeChallenge =>
   isRecord(value) &&
@@ -3030,6 +3073,7 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
           'skillPaths',
           'mcpServers',
           'pluginCommands',
+          'pluginTools',
           'pluginHooks',
           'instruction',
           'approvalMode',
@@ -3068,6 +3112,7 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
           )) ||
         (value.pluginCommands !== undefined &&
           parsePluginCommands(value.pluginCommands) === null) ||
+        (value.pluginTools !== undefined && !isPluginToolList(value.pluginTools)) ||
         (value.pluginHooks !== undefined && parsePluginHooks(value.pluginHooks) === null) ||
         (value.rtkEnabled !== undefined && typeof value.rtkEnabled !== 'boolean') ||
         (value.planMode !== undefined && typeof value.planMode !== 'boolean') ||
@@ -3400,7 +3445,8 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
     case 'browser-result':
     case 'memory-result':
     case 'delegation-result':
-    case 'computer-result': {
+    case 'computer-result':
+    case 'plugin-tool-result': {
       if (
         !hasOnlyKeys(value, ['type', 'identity', 'requestId', 'ok', 'result', 'error']) ||
         !parseAnySessionIdentity(value.identity) ||
@@ -3789,6 +3835,18 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
         ? (value as unknown as AgentWorkerEvent)
         : null;
     case 'computer-cancel':
+      return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId']) &&
+        isNonEmptyString(value.requestId)
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    case 'plugin-tool-invoke':
+      return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId', 'toolName', 'args']) &&
+        isNonEmptyString(value.requestId) &&
+        typeof value.toolName === 'string' &&
+        parsePluginToolName(value.toolName) !== null
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    case 'plugin-tool-cancel':
       return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId']) &&
         isNonEmptyString(value.requestId)
         ? (value as unknown as AgentWorkerEvent)

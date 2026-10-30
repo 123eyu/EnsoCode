@@ -13,6 +13,7 @@ import type {
   ExtensionPluginSummary,
   PluginToolDescriptor,
 } from '@shared/extensionPlugins/types';
+import type { McpServerSpawnConfig } from '@shared/types/agent';
 import type { WorkerForkOptions, WorkerProcess } from '../../platform/types';
 import { type GateDeps, PluginHostGate } from './gate';
 import {
@@ -29,6 +30,8 @@ import { applyPluginAction, type PluginAction, type PluginRecord } from './lifec
 import { PluginProcess, pluginError } from './process';
 import { readRegistry, writeRegistry } from './registry';
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: 清单里的占位符字面量
+const PLUGIN_ROOT_TOKEN = '${ENSO_PLUGIN_ROOT}';
 const STAGE_TTL_MS = 10 * 60_000;
 const CRASH_WINDOW_MS = 10 * 60_000;
 const CRASH_LIMIT = 3;
@@ -252,21 +255,23 @@ export class ExtensionPluginService {
     );
   }
 
-  mcpServersForSpawn(): {
-    pluginId: string;
-    cwd: string;
-    name: string;
-    command: string;
-    args: string[];
-    env: Record<string, string>;
-  }[] {
-    return this.enabled().flatMap(({ id, dir, manifest }) =>
-      manifest.contributes.mcpServers.map((s) => ({
-        pluginId: id,
-        cwd: pluginPackagePath(this.options.root, id, dir),
-        ...s,
-      }))
-    );
+  /** 服务名加 `plugin-<id>-` 前缀；`${ENSO_PLUGIN_ROOT}` 展开为安装目录，env 只含清单字面量 */
+  mcpServersForSpawn(): McpServerSpawnConfig[] {
+    return this.enabled().flatMap(({ id, dir, manifest }) => {
+      const pluginRoot = pluginPackagePath(this.options.root, id, dir);
+      const expand = (value: string) => value.replaceAll(PLUGIN_ROOT_TOKEN, pluginRoot);
+      return manifest.contributes.mcpServers.map((s) => ({
+        name: `plugin-${id.replaceAll('.', '-')}-${s.name}`,
+        description: `${manifest.name} 插件`,
+        transport: 'stdio' as const,
+        command: expand(s.command),
+        args: s.args.map(expand),
+        env: {
+          ...Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, expand(v)])),
+          ENSO_PLUGIN_ROOT: pluginRoot,
+        },
+      }));
+    });
   }
 
   async callTool(input: {
