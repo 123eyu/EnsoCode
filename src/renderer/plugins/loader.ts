@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { type ComponentType, createElement, type ReactElement } from 'react';
+import { type DraftRequest, type DraftResult, handleDraftRequest } from './draftBridge';
 import { clearPluginSlots, type PluginSlotEntry, registerPluginSlot } from './registry';
 
 export interface PluginRendererDeps {
@@ -7,6 +8,7 @@ export interface PluginRendererDeps {
   react: unknown;
   sessionId(): string | null;
   call(pluginId: string, method: string, args: unknown, sessionId: string | null): Promise<unknown>;
+  draft(request: DraftRequest): DraftResult;
 }
 
 async function importAssetModule(
@@ -30,6 +32,7 @@ export function createRendererDeps(sessionId: () => string | null): PluginRender
     react: React,
     sessionId,
     importModule: importAssetModule,
+    draft: handleDraftRequest,
     call: async (pluginId, method, args, sid) => {
       const result = await window.electronAPI.extensionPlugins.call({
         pluginId,
@@ -43,6 +46,28 @@ export function createRendererDeps(sessionId: () => string | null): PluginRender
   };
 }
 
+const codedError = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+/** 渲染模块与界面同权，草稿直接走本窗口的草稿桥；仍受内容指纹、引用与组字检查约束 */
+function rendererComposer(deps: PluginRendererDeps) {
+  const run = async (op: DraftRequest['op'], payload: Record<string, unknown>) => {
+    const sessionId = deps.sessionId();
+    if (!sessionId) throw codedError('NO_SESSION', '当前没有会话');
+    const result = deps.draft({ sessionId, op, payload });
+    if (!result.ok) throw codedError(result.code, result.error);
+    return result.value;
+  };
+  return Object.freeze({
+    readDraft: () => run('readDraft', {}),
+    insertText: (input: { text: string }) => run('insertText', { text: input?.text }),
+    replaceDraft: (input: { text: string; expect?: unknown }) =>
+      run('replaceDraft', {
+        text: input?.text,
+        ...(input?.expect !== undefined ? { expect: input.expect } : {}),
+      }),
+  });
+}
+
 /**
  * 加载一个插件的渲染模块。模块在宿主页面里运行（完全信任，见设计第 1 节），
  * `onLoad` 里用 `enso.slots.register` 登记挂点；卸载时全部收回。
@@ -50,7 +75,8 @@ export function createRendererDeps(sessionId: () => string | null): PluginRender
 export async function loadPluginRenderer(
   pluginId: string,
   rel: string,
-  deps: PluginRendererDeps
+  deps: PluginRendererDeps,
+  options: { draft?: boolean } = {}
 ): Promise<{ dispose(): void }> {
   const mod = await deps.importModule(pluginId, rel);
   if (typeof mod.onLoad !== 'function') throw new Error('插件渲染模块没有导出 onLoad');
@@ -68,6 +94,7 @@ export async function loadPluginRenderer(
       if (action !== 'plugin.call') throw new Error(`未知动作 ${action}`);
       return deps.call(pluginId, String(payload.method ?? ''), payload.args, deps.sessionId());
     },
+    ...(options.draft ? { composer: rendererComposer(deps) } : {}),
   };
   try {
     const returned = await mod.onLoad(enso);

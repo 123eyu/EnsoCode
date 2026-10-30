@@ -84,7 +84,7 @@ describe('PluginProcess', () => {
     const result = s.proc.call(
       'tool.execute',
       { name: 'lookup' },
-      { invocationId: 'i1', sessionId: 's1', timeoutMs: 1000 }
+      { invocationId: 'i1', sessionId: 's1', projectRoot: null, timeoutMs: 1000 }
     );
     await flush();
     const sentCall = s.child().inbox.find((m) => m.t === 'call');
@@ -109,7 +109,7 @@ describe('PluginProcess', () => {
     const result = s.proc.call(
       'tool.execute',
       {},
-      { invocationId: 'i2', sessionId: null, timeoutMs: 100 }
+      { invocationId: 'i2', sessionId: null, projectRoot: null, timeoutMs: 100 }
     );
     const assertion = expect(result).rejects.toMatchObject({ code: 'TIMEOUT' });
     await vi.advanceTimersByTimeAsync(150);
@@ -126,7 +126,7 @@ describe('PluginProcess', () => {
     const result = s.proc.call(
       'command.run',
       {},
-      { invocationId: 'i3', sessionId: null, timeoutMs: 1000 }
+      { invocationId: 'i3', sessionId: null, projectRoot: null, timeoutMs: 1000 }
     );
     await flush();
     const sentCall = s.child().inbox.find((m) => m.t === 'call');
@@ -147,7 +147,7 @@ describe('PluginProcess', () => {
     const result = s.proc.call(
       'tool.execute',
       {},
-      { invocationId: 'i4', sessionId: null, timeoutMs: 1000 }
+      { invocationId: 'i4', sessionId: null, projectRoot: null, timeoutMs: 1000 }
     );
     const assertion = expect(result).rejects.toMatchObject({ code: 'PLUGIN_EXITED' });
     await flush();

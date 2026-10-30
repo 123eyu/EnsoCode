@@ -90,6 +90,10 @@ async function handlePlugin(command: PluginControlCommand): Promise<unknown> {
       return plugins.rejectPending(command.id);
     case 'uninstall':
       return plugins.uninstall(command.id);
+    case 'config-get':
+      return plugins.configView(command.id);
+    case 'config-set':
+      return plugins.setConfig(command.id, command.values);
   }
 }
 

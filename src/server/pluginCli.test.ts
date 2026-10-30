@@ -16,6 +16,7 @@ const preview: ExtensionPluginInstallPreview = {
   fsWrite: [],
   netDomains: ['api.example.com'],
   mcpServers: [],
+  mcpTools: [],
   tools: [{ name: 'greet', description: 'greet someone' }],
   hasRenderer: false,
   warnings: ['w1'],
@@ -27,6 +28,21 @@ function deps(answer = true) {
   const call = vi.fn(async (command: Record<string, unknown>) => {
     if (command.action === 'stage') return { ok: true, preview };
     if (command.action === 'list') return { ok: true, plugins: [] };
+    if (command.action === 'config-get')
+      return {
+        ok: true,
+        fields: [
+          {
+            key: 'baseUrl',
+            title: '地址',
+            description: '',
+            secret: false,
+            set: true,
+            value: 'https://x',
+          },
+          { key: 'token', title: 'Token', description: '', secret: true, set: false },
+        ],
+      };
     return { ok: true };
   });
   return {
@@ -35,6 +51,7 @@ function deps(answer = true) {
     deps: {
       call,
       confirm: vi.fn(async () => answer),
+      ask: vi.fn(async () => 'typed-secret'),
       log: (line: string) => out.push(line),
       cwd: '/home/u',
       interactive: true,
@@ -96,5 +113,37 @@ describe('enso-server plugin', () => {
     expect(call).toHaveBeenLastCalledWith({ cmd: 'plugin', action: 'disable', id: 'demo.hello' });
     await expect(runPluginCommand(['enable'], d)).rejects.toThrow('用法');
     await expect(runPluginCommand(['bogus'], d)).rejects.toThrow('用法');
+  });
+
+  it('config：不带赋值时列出配置，密钥只显示是否已设置', async () => {
+    const { out, deps: d } = deps();
+    await runPluginCommand(['config', 'demo.hello'], d);
+    const text = out.join('\n');
+    expect(text).toContain('baseUrl');
+    expect(text).toContain('https://x');
+    expect(text).toMatch(/token.*未设置/);
+  });
+
+  it('config：key=value 设置，--unset 清除，空值在交互终端里提示输入', async () => {
+    const { call, deps: d } = deps();
+    await runPluginCommand(['config', 'demo.hello', 'baseUrl=https://y', '--unset', 'token'], d);
+    expect(call).toHaveBeenLastCalledWith({
+      cmd: 'plugin',
+      action: 'config-set',
+      id: 'demo.hello',
+      values: { baseUrl: 'https://y', token: null },
+    });
+    await runPluginCommand(['config', 'demo.hello', 'token='], d);
+    expect(d.ask).toHaveBeenCalledWith('token');
+    expect(call).toHaveBeenLastCalledWith({
+      cmd: 'plugin',
+      action: 'config-set',
+      id: 'demo.hello',
+      values: { token: 'typed-secret' },
+    });
+    await expect(
+      runPluginCommand(['config', 'demo.hello', 'token='], { ...d, interactive: false })
+    ).rejects.toThrow('交互');
+    await expect(runPluginCommand(['config', 'demo.hello', 'oops'], d)).rejects.toThrow('用法');
   });
 });

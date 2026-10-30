@@ -7,6 +7,7 @@ const grant = (patch: Partial<PluginGrant> = {}): PluginGrant => ({
   fsWrite: [],
   netDomains: ['api.example.com'],
   mcp: [{ name: 'demo', command: 'node', args: ['server.js'], envKeys: [] }],
+  mcpTools: ['search_context'],
   renderer: false,
   ...patch,
 });
@@ -20,10 +21,16 @@ describe('grantExpands', () => {
     expect(
       grantExpands(
         grant(),
-        grant({ permissions: ['agent.tool'], fsRead: [], netDomains: [], mcp: [] })
+        grant({ permissions: ['agent.tool'], fsRead: [], netDomains: [], mcp: [], mcpTools: [] })
       )
     ).toBe(false);
     expect(grantExpands(grant(), grant({ fsRead: ['docs/api'] }))).toBe(false);
+  });
+
+  it('旧记录没有 mcpTools 字段时按空处理', () => {
+    const { mcpTools: _omit, ...legacy } = grant();
+    expect(grantExpands(legacy as PluginGrant, grant({ mcpTools: [] }))).toBe(false);
+    expect(grantExpands(legacy as PluginGrant, grant())).toBe(true);
   });
 
   it.each<[string, Partial<PluginGrant>]>([
@@ -44,6 +51,7 @@ describe('grantExpands', () => {
       { mcp: [{ name: 'demo', command: 'node', args: ['server.js'], envKeys: ['TOKEN'] }] },
     ],
     ['新增 renderer', { renderer: true }],
+    ['可调用的 MCP 工具变多', { mcpTools: ['search_context', 'enhance_prompt'] }],
   ])('%s 算扩大', (_label, patch) => {
     expect(grantExpands(grant(), grant(patch))).toBe(true);
   });

@@ -1389,6 +1389,17 @@ export type AgentCommand =
   /** 不可被闲置回收的会话全集（桌面正在查看 + 手机订阅中），每次全量覆盖 */
   | { type: 'pin-sessions'; sessionIds: string[] }
   | { type: 'warm-mcp'; servers: McpServerSpawnConfig[] }
+  /** 插件经 Main 列 / 调宿主 MCP 工具；服务配置由 Main 下发，凭据不经插件 */
+  | { type: 'plugin-mcp-list'; requestId: string; servers: McpServerSpawnConfig[] }
+  | {
+      type: 'plugin-mcp-call';
+      requestId: string;
+      servers: McpServerSpawnConfig[];
+      server: string;
+      tool: string;
+      args: Record<string, unknown>;
+    }
+  | { type: 'plugin-mcp-cancel'; requestId: string }
   /** 运行中同步代理 env；null 表示删除该键 */
   | { type: 'set-proxy-env'; env: Record<string, string | null> };
 
@@ -1637,6 +1648,7 @@ export type RendererAgentEvent =
       | ChildLifecycleEvent
       | McpWorkerEvent
       | WorkspaceLockEvent
+      | PluginMcpResultEvent
       | { type: 'oauth-pool-select' }
       | { type: 'privacy-mask-ledger' }
       | Extract<
@@ -1664,6 +1676,10 @@ export type WorkspaceLockEvent =
   | { type: 'workspace-lock-result'; requestId: string; ok: boolean; error?: string }
   | { type: 'workspace-unlock-result'; requestId: string; ok: boolean; error?: string };
 
+export type PluginMcpResultEvent =
+  | { type: 'plugin-mcp-result'; requestId: string; ok: true; value: unknown }
+  | { type: 'plugin-mcp-result'; requestId: string; ok: false; error: string };
+
 export type AgentWorkerEvent =
   /** 会话外（辅助补全 / compaction）的脱敏记录，Main 写 ledger */
   | { type: 'privacy-mask-ledger'; record: PrivacyMaskRecord }
@@ -1676,6 +1692,7 @@ export type AgentWorkerEvent =
       excludedAccountKeys?: string[];
     }
   | WorkspaceLockEvent
+  | PluginMcpResultEvent
   | ParentLifecycleEvent
   | ChildLifecycleEvent
   | {
@@ -3561,6 +3578,25 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
       return hasExactKeys(value, ['type', 'servers']) && Array.isArray(value.servers)
         ? (value as unknown as AgentCommand)
         : null;
+    case 'plugin-mcp-list':
+      return hasExactKeys(value, ['type', 'requestId', 'servers']) &&
+        isNonEmptyString(value.requestId) &&
+        Array.isArray(value.servers)
+        ? (value as unknown as AgentCommand)
+        : null;
+    case 'plugin-mcp-call':
+      return hasExactKeys(value, ['type', 'requestId', 'servers', 'server', 'tool', 'args']) &&
+        isNonEmptyString(value.requestId) &&
+        Array.isArray(value.servers) &&
+        isNonEmptyString(value.server) &&
+        isNonEmptyString(value.tool) &&
+        isRecord(value.args)
+        ? (value as unknown as AgentCommand)
+        : null;
+    case 'plugin-mcp-cancel':
+      return hasExactKeys(value, ['type', 'requestId']) && isNonEmptyString(value.requestId)
+        ? { type: 'plugin-mcp-cancel', requestId: value.requestId }
+        : null;
     case 'set-proxy-env': {
       if (!hasExactKeys(value, ['type', 'env']) || !isRecord(value.env)) return null;
       for (const entry of Object.values(value.env)) {
@@ -3666,6 +3702,18 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
       (value.ok === true
         ? value.error === undefined
         : value.ok === false && isNonEmptyString(value.error))
+      ? (value as unknown as AgentWorkerEvent)
+      : null;
+  }
+  if (value.type === 'plugin-mcp-result') {
+    if (!isNonEmptyString(value.requestId)) return null;
+    if (value.ok === true)
+      return hasExactKeys(value, ['type', 'requestId', 'ok', 'value'])
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    return value.ok === false &&
+      hasExactKeys(value, ['type', 'requestId', 'ok', 'error']) &&
+      isNonEmptyString(value.error)
       ? (value as unknown as AgentWorkerEvent)
       : null;
   }

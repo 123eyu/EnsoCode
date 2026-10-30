@@ -15,6 +15,7 @@ const manifest = (patch: Partial<ExtensionPluginManifest> = {}): ExtensionPlugin
   permissions: ['fs.read', 'fs.write', 'net.fetch', 'composer.draft', 'ui.notify', 'session.read'],
   fs: { read: ['docs'], write: ['out'] },
   net: { domains: ['api.example.com'] },
+  mcp: { tools: [] },
   contributes: {
     agentTools: [],
     commands: [],
@@ -22,6 +23,8 @@ const manifest = (patch: Partial<ExtensionPluginManifest> = {}): ExtensionPlugin
     triggers: [],
     skills: [],
     mcpServers: [],
+    methods: [],
+    configuration: [],
   },
   ...patch,
 });
@@ -49,6 +52,12 @@ beforeEach(() => {
     notify: vi.fn(() => true),
     composer: vi.fn(async () => ({ ok: true })),
     sessionMessages: vi.fn(async () => []),
+    config: vi.fn(() => ({ baseUrl: 'https://bce.example.com' })),
+    mcpTools: vi.fn(async () => [
+      { server: 'bce', name: 'enhance_prompt', description: '改写' },
+      { server: 'bce', name: 'delete_index', description: '删索引' },
+    ]),
+    mcpCall: vi.fn(async () => ({ content: 'enhanced', isError: false })),
     now: () => now,
   };
   gate = new PluginHostGate(deps);
@@ -215,6 +224,94 @@ describe('PluginHostGate', () => {
     gate = new PluginHostGate(deps);
     await expect(gate.handle('a.b', 'ui.notify', { title: 't' }, undefined)).rejects.toMatchObject({
       code: 'PLUGIN_DISABLED',
+    });
+  });
+
+  it('读自己的配置不需要权限，也不需要调用上下文', async () => {
+    await expect(gate.handle('a.b', 'config.get', {}, undefined)).resolves.toEqual({
+      baseUrl: 'https://bce.example.com',
+    });
+    expect(deps.config).toHaveBeenCalledWith('a.b');
+  });
+
+  describe('宿主 MCP', () => {
+    const mcpManifest = () =>
+      manifest({ permissions: ['mcp.call'], mcp: { tools: ['enhance_prompt'] } });
+    beforeEach(() => {
+      deps.manifest = (id) => (id === 'a.b' ? mcpManifest() : null);
+      gate = new PluginHostGate(deps);
+    });
+
+    it('没有 mcp.call 权限一律拒绝', async () => {
+      deps.manifest = () => manifest();
+      gate = new PluginHostGate(deps);
+      await expect(gate.handle('a.b', 'mcp.tools', {}, agentCall())).rejects.toMatchObject({
+        code: 'PERMISSION_DENIED',
+      });
+    });
+
+    it('列工具只返回清单声明过的工具名', async () => {
+      await expect(gate.handle('a.b', 'mcp.tools', {}, agentCall())).resolves.toEqual([
+        { server: 'bce', name: 'enhance_prompt', description: '改写' },
+      ]);
+      expect(deps.mcpTools).toHaveBeenCalledWith(
+        { sessionId: 's1', projectRoot: root },
+        expect.any(AbortSignal)
+      );
+    });
+
+    it('调用未声明的工具拒绝，不触达 MCP', async () => {
+      await expect(
+        gate.handle(
+          'a.b',
+          'mcp.call',
+          { server: 'bce', tool: 'delete_index', args: {} },
+          agentCall()
+        )
+      ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      expect(deps.mcpCall).not.toHaveBeenCalled();
+    });
+
+    it('调用必须在宿主发起的调用内，参数必须是对象', async () => {
+      await expect(
+        gate.handle('a.b', 'mcp.call', { server: 'bce', tool: 'enhance_prompt' }, undefined)
+      ).rejects.toMatchObject({ code: 'NO_INVOCATION' });
+      await expect(
+        gate.handle(
+          'a.b',
+          'mcp.call',
+          { server: 'bce', tool: 'enhance_prompt', args: [1] },
+          agentCall()
+        )
+      ).rejects.toMatchObject({ code: 'INVALID_ARGS' });
+    });
+
+    it('调用带上会话与项目根，取消调用会中止 MCP 请求', async () => {
+      let seen: AbortSignal | undefined;
+      deps.mcpCall = vi.fn(async (_target, _server, _tool, _args, signal: AbortSignal) => {
+        seen = signal;
+        return { content: 'enhanced', isError: false };
+      });
+      gate = new PluginHostGate(deps);
+      const inv = agentCall();
+      await expect(
+        gate.handle(
+          'a.b',
+          'mcp.call',
+          { server: 'bce', tool: 'enhance_prompt', args: { prompt: 'x' } },
+          inv
+        )
+      ).resolves.toEqual({ content: 'enhanced', isError: false });
+      expect(deps.mcpCall).toHaveBeenCalledWith(
+        { sessionId: 's1', projectRoot: root },
+        'bce',
+        'enhance_prompt',
+        { prompt: 'x' },
+        expect.any(AbortSignal)
+      );
+      expect(seen?.aborted).toBe(false);
+      gate.invocations.cancel(inv);
+      expect(seen?.aborted).toBe(true);
     });
   });
 });

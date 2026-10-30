@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { grantExpands, grantOf } from '@shared/extensionPlugins/grant';
 import {
@@ -9,6 +9,7 @@ import {
 import type { PluginCallMethod, PluginToolResult } from '@shared/extensionPlugins/protocol';
 import { parsePluginToolName, pluginToolName } from '@shared/extensionPlugins/toolName';
 import type {
+  ExtensionPluginConfigField,
   ExtensionPluginInstallPreview,
   ExtensionPluginSummary,
   PluginToolDescriptor,
@@ -43,6 +44,7 @@ const MAX_UI_PAYLOAD_BYTES = 64 * 1024;
 const UI_RATE_PER_SECOND = 10;
 const BREAKER_FAILURES = 5;
 const BREAKER_COOLDOWN_MS = 30_000;
+const MAX_CONFIG_VALUE_CHARS = 4096;
 
 export interface ExtensionPluginServiceOptions {
   root: string;
@@ -50,10 +52,24 @@ export interface ExtensionPluginServiceOptions {
   hostPath: string;
   env: NodeJS.ProcessEnv;
   fork(modulePath: string, args: string[], options: WorkerForkOptions): WorkerProcess;
-  gate: Omit<GateDeps, 'manifest'>;
+  gate: Omit<GateDeps, 'manifest' | 'config'>;
 }
 
 export type UiCallMethod = Exclude<PluginCallMethod, 'tool.execute'>;
+
+/** 界面调用的超时：渲染方法可在清单里声明更长的超时，其余固定 */
+export function uiCallTimeout(
+  manifest: Pick<ExtensionPluginManifest, 'contributes'> & {
+    contributes: Pick<ExtensionPluginManifest['contributes'], 'methods'>;
+  },
+  method: UiCallMethod,
+  payload: Record<string, unknown>
+): number {
+  if (method === 'command.run') return COMMAND_TIMEOUT_MS;
+  if (method !== 'renderer.call') return UI_TIMEOUT_MS;
+  const declared = manifest.contributes.methods.find((m) => m.name === payload.method);
+  return declared?.timeoutMs ?? UI_TIMEOUT_MS;
+}
 
 interface Loaded {
   dir: string;
@@ -80,7 +96,11 @@ export class ExtensionPluginService {
 
   constructor(private readonly options: ExtensionPluginServiceOptions) {
     this.records = readRegistry(options.root).plugins;
-    this.gate = new PluginHostGate({ ...options.gate, manifest: (id) => this.enabledManifest(id) });
+    this.gate = new PluginHostGate({
+      ...options.gate,
+      manifest: (id) => this.enabledManifest(id),
+      config: (id) => this.configValues(id),
+    });
   }
 
   onChange(listener: () => void): () => void {
@@ -110,6 +130,7 @@ export class ExtensionPluginService {
           triggers: manifest.contributes.triggers,
           hasRenderer: manifest.renderer !== undefined,
           ...(manifest.renderer ? { renderer: manifest.renderer } : {}),
+          configurable: manifest.contributes.configuration.length > 0,
           ...(record.pending && pending
             ? { pendingVersion: record.pending.version, pendingPermissions: pending.permissions }
             : {}),
@@ -144,6 +165,7 @@ export class ExtensionPluginService {
       fsWrite: m.fs.write,
       netDomains: m.net.domains,
       mcpServers: grant.mcp,
+      mcpTools: m.mcp.tools,
       tools: m.contributes.agentTools.map(({ name, description }) => ({ name, description })),
       hasRenderer: m.renderer !== undefined,
       warnings: staged.warnings,
@@ -233,7 +255,69 @@ export class ExtensionPluginService {
     this.stopProcess(id);
     rmSync(join(this.options.root, 'packages', id), { recursive: true, force: true });
     rmSync(pluginDataPath(this.options.root, id), { recursive: true, force: true });
+    rmSync(this.configPath(id), { force: true });
     for (const key of this.loaded.keys()) if (key.startsWith(`${id}/`)) this.loaded.delete(key);
+    return { ok: true };
+  }
+
+  /** 插件配置值（含密钥），只给插件进程 */
+  configValues(id: string): Record<string, string> {
+    const manifest = this.installedManifest(id);
+    if (!manifest) return {};
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(this.configPath(id), 'utf8'));
+    } catch {
+      return {};
+    }
+    const out: Record<string, string> = {};
+    if (typeof raw !== 'object' || raw === null) return out;
+    for (const field of manifest.contributes.configuration) {
+      const value = (raw as Record<string, unknown>)[field.key];
+      if (typeof value === 'string') out[field.key] = value;
+    }
+    return out;
+  }
+
+  /** 给设置界面看的配置：密钥只报告是否已设置 */
+  configView(
+    id: string
+  ): { ok: true; fields: ExtensionPluginConfigField[] } | { ok: false; error: string } {
+    const manifest = this.installedManifest(id);
+    if (!manifest) return { ok: false, error: '插件未安装' };
+    const values = this.configValues(id);
+    return {
+      ok: true,
+      fields: manifest.contributes.configuration.map((f) => {
+        const value = values[f.key];
+        return {
+          ...f,
+          set: value !== undefined,
+          ...(!f.secret && value !== undefined ? { value } : {}),
+        };
+      }),
+    };
+  }
+
+  /** 省略的键不变，null 清除；只接受清单声明的键 */
+  setConfig(id: string, patch: Record<string, string | null>): { ok: boolean; error?: string } {
+    const manifest = this.installedManifest(id);
+    if (!manifest) return { ok: false, error: '插件未安装' };
+    const keys = new Set(manifest.contributes.configuration.map((f) => f.key));
+    const next = this.configValues(id);
+    for (const [key, value] of Object.entries(patch)) {
+      if (!keys.has(key)) return { ok: false, error: `未知配置项 ${key}` };
+      if (value === null) delete next[key];
+      else if (typeof value !== 'string' || value.length > MAX_CONFIG_VALUE_CHARS)
+        return { ok: false, error: `配置项 ${key} 不合法或过长` };
+      else next[key] = value;
+    }
+    const target = this.configPath(id);
+    mkdirSync(join(this.options.root, 'config'), { recursive: true });
+    const tmp = `${target}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(next), { mode: 0o600 });
+    renameSync(tmp, target);
+    for (const listener of this.listeners) listener();
     return { ok: true };
   }
 
@@ -336,7 +420,7 @@ export class ExtensionPluginService {
         projectRoot: input.projectRoot,
         gesture: true,
         origin: input.origin ?? null,
-        timeoutMs: input.method === 'command.run' ? COMMAND_TIMEOUT_MS : UI_TIMEOUT_MS,
+        timeoutMs: uiCallTimeout(manifest, input.method, input.payload),
       });
       if (Buffer.byteLength(JSON.stringify(value ?? null), 'utf8') > MAX_UI_PAYLOAD_BYTES)
         throw pluginError('TOO_LARGE', '返回值超过 64KB');
@@ -408,9 +492,12 @@ export class ExtensionPluginService {
       return await proc.call(method, payload, {
         invocationId,
         sessionId: ctx.sessionId,
+        projectRoot: ctx.projectRoot,
         timeoutMs: ctx.timeoutMs,
       });
     } catch (error) {
+      // 超时或失败后中止这次调用里仍在进行的宿主请求（如 MCP 调用）
+      this.gate.invocations.cancel(invocationId);
       if ((error as { code?: string }).code === 'PLUGIN_INIT_FAILED') this.recordCrash(pluginId);
       throw error;
     } finally {
@@ -483,6 +570,16 @@ export class ExtensionPluginService {
       const manifest = this.load(r.id, r.dir);
       return manifest ? [{ id: r.id, dir: r.dir, manifest }] : [];
     });
+  }
+
+  /** 已安装（不论启停）的当前版本清单 */
+  private installedManifest(id: string): ExtensionPluginManifest | null {
+    const record = this.records.find((r) => r.id === id);
+    return record ? this.load(record.id, record.dir) : null;
+  }
+
+  private configPath(id: string): string {
+    return join(this.options.root, 'config', `${id}.json`);
   }
 
   private load(id: string, dir: string): ExtensionPluginManifest | null {

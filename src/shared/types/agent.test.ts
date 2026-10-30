@@ -308,6 +308,49 @@ describe('agent control tool protocol', () => {
       }
     }
   );
+
+  it('插件 MCP 命令：list / call / cancel 严格校验', () => {
+    const servers = [{ name: 'bce', transport: 'stdio', command: 'bce-tool' }];
+    const list = { type: 'plugin-mcp-list', requestId: 'r1', servers };
+    expect(parseAgentCommand(list)).toEqual(list);
+    const call = {
+      type: 'plugin-mcp-call',
+      requestId: 'r2',
+      servers,
+      server: 'bce',
+      tool: 'enhance_prompt',
+      args: { prompt: 'x' },
+    };
+    expect(parseAgentCommand(call)).toEqual(call);
+    expect(parseAgentCommand({ type: 'plugin-mcp-cancel', requestId: 'r2' })).toEqual({
+      type: 'plugin-mcp-cancel',
+      requestId: 'r2',
+    });
+    for (const bad of [
+      { ...list, requestId: '' },
+      { ...list, servers: 'x' },
+      { ...list, extra: 1 },
+      { ...call, server: '' },
+      { ...call, tool: 1 },
+      { ...call, args: [1] },
+      { type: 'plugin-mcp-cancel', requestId: 'r2', extra: 1 },
+    ])
+      expect(parseAgentCommand(bad)).toBeNull();
+  });
+
+  it('插件 MCP 结果：成功带 value，失败带 error', () => {
+    const ok = { type: 'plugin-mcp-result', requestId: 'r1', ok: true, value: [] };
+    expect(parseAgentWorkerEvent(ok)).toEqual(ok);
+    const failed = { type: 'plugin-mcp-result', requestId: 'r1', ok: false, error: 'boom' };
+    expect(parseAgentWorkerEvent(failed)).toEqual(failed);
+    for (const bad of [
+      { ...ok, requestId: '' },
+      { ...ok, error: 'x' },
+      { ...failed, error: '' },
+      { ...failed, value: 1 },
+    ])
+      expect(parseAgentWorkerEvent(bad)).toBeNull();
+  });
 });
 
 describe('Main-owned source authority contracts', () => {

@@ -516,6 +516,9 @@ export const IPC_CHANNELS = {
   EXTENSION_PLUGINS_DRAFT_REQUEST: 'extension-plugins:draft-request',
   /** 渲染进程对草稿请求的回包，Main 校验回包窗口与发起窗口一致 */
   EXTENSION_PLUGINS_DRAFT_RESPONSE: 'extension-plugins:draft-response',
+  /** 插件配置项：读（密钥不回显）与写；只在本机界面或服务端 CLI 上做 */
+  EXTENSION_PLUGINS_CONFIG_GET: 'extension-plugins:config-get',
+  EXTENSION_PLUGINS_CONFIG_SET: 'extension-plugins:config-set',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

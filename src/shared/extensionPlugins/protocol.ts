@@ -18,6 +18,9 @@ export const PLUGIN_HOST_APIS = [
   'composer.insertText',
   'composer.replaceDraft',
   'session.messages',
+  'config.get',
+  'mcp.tools',
+  'mcp.call',
 ] as const;
 export type PluginHostApi = (typeof PLUGIN_HOST_APIS)[number];
 
@@ -46,6 +49,8 @@ export type MainToPluginHost =
       payload: unknown;
       invocationId: string;
       sessionId: string | null;
+      /** Main 推导的项目根；无本机项目为 null */
+      projectRoot: string | null;
     }
   | { t: 'cancel'; invocationId: string }
   | PluginResponse;

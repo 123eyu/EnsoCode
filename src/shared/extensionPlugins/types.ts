@@ -16,8 +16,20 @@ export interface ExtensionPluginSummary {
   hasRenderer: boolean;
   /** 渲染模块相对路径；渲染层经 asset 通道取源码，不是磁盘路径 */
   renderer?: string;
+  /** 清单声明了配置项 */
+  configurable: boolean;
   pendingVersion?: string;
   pendingPermissions?: ExtensionPluginPermission[];
+}
+
+/** 设置界面看到的配置项：密钥只报告是否已设置，不回显 */
+export interface ExtensionPluginConfigField {
+  key: string;
+  title: string;
+  description: string;
+  secret: boolean;
+  set: boolean;
+  value?: string;
 }
 
 export interface ExtensionPluginInstallPreview {
@@ -31,6 +43,8 @@ export interface ExtensionPluginInstallPreview {
   fsWrite: string[];
   netDomains: string[];
   mcpServers: { name: string; command: string; args: string[]; envKeys: string[] }[];
+  /** 允许调用的宿主 MCP 工具名 */
+  mcpTools: string[];
   tools: { name: string; description: string }[];
   hasRenderer: boolean;
   warnings: string[];

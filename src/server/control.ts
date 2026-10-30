@@ -7,7 +7,9 @@ export type PluginControlCommand =
   | { cmd: 'plugin'; action: 'list' }
   | { cmd: 'plugin'; action: 'stage'; path: string }
   | { cmd: 'plugin'; action: (typeof PLUGIN_TOKEN_ACTIONS)[number]; token: string }
-  | { cmd: 'plugin'; action: (typeof PLUGIN_ID_ACTIONS)[number]; id: string };
+  | { cmd: 'plugin'; action: (typeof PLUGIN_ID_ACTIONS)[number]; id: string }
+  | { cmd: 'plugin'; action: 'config-get'; id: string }
+  | { cmd: 'plugin'; action: 'config-set'; id: string; values: Record<string, string | null> };
 
 export type ControlCommand =
   | { cmd: 'pair' }
@@ -26,6 +28,21 @@ function parsePluginCommand(
     return typeof value === 'string' && value.trim() ? value.trim() : null;
   };
   if (action === 'list') return { cmd: 'plugin', action };
+  if (action === 'config-get') {
+    const id = text('id');
+    return id ? { cmd: 'plugin', action, id } : { error: 'plugin config-get requires id' };
+  }
+  if (action === 'config-set') {
+    const id = text('id');
+    const { values } = input;
+    const valid =
+      typeof values === 'object' &&
+      values !== null &&
+      !Array.isArray(values) &&
+      Object.values(values).every((v) => v === null || typeof v === 'string');
+    if (!id || !valid) return { error: 'plugin config-set requires id and string values' };
+    return { cmd: 'plugin', action, id, values: values as Record<string, string | null> };
+  }
   if (action === 'stage') {
     const path = text('path');
     if (!path || !isAbsolute(path)) return { error: 'plugin stage requires an absolute path' };

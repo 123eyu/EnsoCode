@@ -22,6 +22,7 @@ interface Invocation {
 
 interface HandlerContext {
   sessionId: string | null;
+  projectRoot: string | null;
   invocationId: string;
   signal: AbortSignal;
 }
@@ -123,6 +124,12 @@ export function runPluginHost(transport: HostTransport): void {
         replaceDraft: (input: unknown) => hostCall('composer.replaceDraft', input),
       },
       session: { messages: () => hostCall('session.messages', {}) },
+      config: { get: () => hostCall('config.get', {}) },
+      mcp: {
+        tools: () => hostCall('mcp.tools', {}),
+        call: (server: string, tool: string, args?: unknown) =>
+          hostCall('mcp.call', { server, tool, args: args ?? {} }),
+      },
     });
 
   const dispatch = async (
@@ -156,6 +163,7 @@ export function runPluginHost(transport: HostTransport): void {
     invocations.set(invocation.id, invocation);
     const ctx: HandlerContext = {
       sessionId: message.sessionId,
+      projectRoot: message.projectRoot ?? null,
       invocationId: invocation.id,
       signal: invocation.controller.signal,
     };

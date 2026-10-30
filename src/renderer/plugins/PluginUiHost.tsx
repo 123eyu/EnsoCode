@@ -42,7 +42,9 @@ export function PluginUiHost() {
         for (const plugin of list) {
           if (plugin.state !== 'enabled' || !plugin.renderer) continue;
           try {
-            const handle = await loadPluginRenderer(plugin.id, plugin.renderer, deps);
+            const handle = await loadPluginRenderer(plugin.id, plugin.renderer, deps, {
+              draft: plugin.permissions.includes('composer.draft'),
+            });
             if (mine !== generation) {
               handle.dispose();
               return;

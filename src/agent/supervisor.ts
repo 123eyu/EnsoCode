@@ -807,6 +807,8 @@ export class SessionSupervisor {
     refreshOAuth: (serverId, rejected) => this.requestMcpOAuthRefresh(serverId, rejected),
   });
   private readonly mcpOAuthPending = new Map<string, (result: McpOAuthRefreshResult) => void>();
+  /** 插件经 Main 发起的宿主 MCP 调用，按 requestId 可取消 */
+  private readonly pluginMcpCalls = new Map<string, AbortController>();
   private readonly mcpHotplug = new Map<string, McpHotplug>();
   /** MCP access token 续期只在 Main 做（refresh_token 不进 worker）；超时按临时故障处理 */
   private readonly requestMcpOAuthRefresh = (
@@ -1225,6 +1227,38 @@ export class SessionSupervisor {
       const deferred = command.servers.filter(isDeferredMcp);
       for (const server of deferred) this.mcp.refresh(server);
       void this.adoptDirectMcp(command.servers.filter((server) => !isDeferredMcp(server)));
+      return;
+    }
+    if (command.type === 'plugin-mcp-cancel') {
+      this.pluginMcpCalls.get(command.requestId)?.abort();
+      return;
+    }
+    if (command.type === 'plugin-mcp-list' || command.type === 'plugin-mcp-call') {
+      const { requestId } = command;
+      const controller = new AbortController();
+      this.pluginMcpCalls.set(requestId, controller);
+      const run =
+        command.type === 'plugin-mcp-list'
+          ? this.mcp.pluginTools(command.servers)
+          : this.mcp.callPluginTool(
+              command.servers,
+              command.server,
+              command.tool,
+              command.args,
+              controller.signal
+            );
+      void run
+        .then(
+          (value) => this.options.emit({ type: 'plugin-mcp-result', requestId, ok: true, value }),
+          (error: unknown) =>
+            this.options.emit({
+              type: 'plugin-mcp-result',
+              requestId,
+              ok: false,
+              error: error instanceof Error ? error.message : String(error) || 'MCP call failed',
+            })
+        )
+        .finally(() => this.pluginMcpCalls.delete(requestId));
       return;
     }
     if (command.type === 'pin-sessions') {

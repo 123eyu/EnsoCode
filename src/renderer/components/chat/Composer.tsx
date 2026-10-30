@@ -491,6 +491,11 @@ export function Composer({
   const hasContent = Boolean(content || slash || images.length > 0 || editorHasMentions);
   const agentRecipient = recipient !== undefined;
   const effectiveBusy = busy && !agentRecipient;
+  const pluginSlotProps = {
+    sessionId: isolated ? null : (focusKey ?? null),
+    draft: editorPlain.replaceAll('\uFFFC', ''),
+    busy: locked,
+  };
   // 仅快捷键触发，无绑定时不提示
   const steerAvailable =
     running && queuedCount > 0 && onSteerQueued !== undefined && enterToSend && !!sendBinding;
@@ -923,7 +928,7 @@ export function Composer({
             >
               <ImagePlus className="h-3.5 w-3.5" />
             </button>
-            <PluginComposerSlots side="left" />
+            <PluginComposerSlots side="left" {...pluginSlotProps} />
             {holdVoice ? (
               <HoldToTalkToggle
                 active={holdToTalk}
@@ -949,7 +954,7 @@ export function Composer({
               />
             ) : null}
             {toolbar}
-            <PluginComposerSlots side="right" />
+            <PluginComposerSlots side="right" {...pluginSlotProps} />
             {privacyScan && (privacyScan.blocked.length > 0 || privacyScan.masked > 0) && (
               <span
                 className={cn(

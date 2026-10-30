@@ -1619,6 +1619,16 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_REJECT_PENDING, id),
     uninstall: (id: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_UNINSTALL, id),
+    configGet: (
+      id: string
+    ): Promise<{ ok: true; fields: ExtensionPluginConfigField[] } | { ok: false; error: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_CONFIG_GET, id),
+    /** 省略的键不变，null 清除 */
+    configSet: (
+      id: string,
+      patch: Record<string, string | null>
+    ): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_CONFIG_SET, id, patch),
     call: (request: {
       pluginId: string;
       method: 'command.run' | 'trigger.candidates' | 'trigger.pick' | 'renderer.call';
@@ -1662,6 +1672,7 @@ contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
 import type { ComputerCapabilities } from '@shared/computer/types';
 import type {
+  ExtensionPluginConfigField,
   ExtensionPluginInstallPreview,
   ExtensionPluginSummary,
 } from '@shared/extensionPlugins/types';

@@ -107,7 +107,8 @@ import { agentCommandDispatch } from './agentCommandDispatch';
 import { type MemberAgentType, memberSpawnDescription } from './bots/botAgentType';
 import type { ResolvedPlugins } from './claudePlugins';
 import { isComputerPlatformSupported } from './computer/support';
-import { getExtensionPlugins } from './extensionPlugins';
+import { getExtensionPlugins, setPluginMcpBridge } from './extensionPlugins';
+import { PluginMcpRequests } from './extensionPlugins/mcpRequests';
 import { resolveGlobalInstruction } from './instructionStore';
 import { refreshMcpOAuthAccess } from './mcpOAuthRefresh';
 import { getMcpOAuthStore } from './mcpOAuthStore';
@@ -371,7 +372,8 @@ export function startAgentWorker(): void {
       resolveReleaseWaiters(event);
       // 手动重读结果只回给发起 invoke 的等待者，不进普通事件流（renderer 的通用
       // snapshot 分支会顺手改 started / 清 asks，手动刷新不能有这些副作用）
-      if (pendingReloads.settle(event) || workspaceLocks.settle(event)) return;
+      if (pendingReloads.settle(event) || workspaceLocks.settle(event) || pluginMcp.settle(event))
+        return;
       if (settleCompletion(event) || settleChoice(event)) return;
       onEvent?.(event);
     }
@@ -384,6 +386,7 @@ export function startAgentWorker(): void {
     }
     pendingReloads.failAll('agent worker exited');
     workspaceLocks.failAll('agent worker exited');
+    pluginMcp.failAll('agent worker exited');
     for (const [id, p] of pendingCompletions) {
       pendingCompletions.delete(id);
       p.reject(new Error('agent worker exited'));
@@ -398,6 +401,7 @@ export function startAgentWorker(): void {
 
 export function stopAgentWorker(): void {
   workspaceLocks.failAll('agent worker stopped');
+  pluginMcp.failAll('agent worker stopped');
   worker?.kill();
   worker = null;
   workerReady = false;
@@ -440,6 +444,19 @@ export function isAgentWorkerRunning(): boolean {
 let workspaceBusy: (id: string) => boolean = () => false;
 
 const workspaceLocks = new WorkspaceLockRequests(sendAgentCommand);
+
+/** 插件调宿主 MCP：用用户已启用的 MCP 配置（凭据随配置下发给 worker，不经插件） */
+const pluginMcp = new PluginMcpRequests((command) => sendAgentCommand(command).ok);
+function pluginMcpServers(): McpServerSpawnConfig[] {
+  const state = readSettingsState();
+  const servers = Array.isArray(state?.mcpServers) ? state.mcpServers.filter(isMcpServerEntry) : [];
+  return servers.filter((server) => server.enabled !== false).map(toMcpSpawnConfig);
+}
+setPluginMcpBridge({
+  mcpTools: (_target, signal) => pluginMcp.list(pluginMcpServers(), signal),
+  mcpCall: (_target, server, tool, args, signal) =>
+    pluginMcp.call(pluginMcpServers(), server, tool, args, signal),
+});
 const workspaceWorkers = new Map<string, WorkerProcess | null>();
 
 export async function freezeWorkspace(

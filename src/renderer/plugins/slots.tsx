@@ -58,7 +58,19 @@ export function PluginBlock({
   return <PluginSlotView entry={entry} props={{ language: lang, source }} />;
 }
 
-export function PluginComposerSlots({ side }: { side: 'left' | 'right' }) {
+export function PluginComposerSlots({
+  side,
+  sessionId,
+  draft,
+  busy,
+}: {
+  side: 'left' | 'right';
+  /** 草稿接口能写到的会话；侧栏等隔离输入框为 null */
+  sessionId: string | null;
+  /** 当前草稿的纯文本（不含文件 / 会话引用） */
+  draft: string;
+  busy: boolean;
+}) {
   usePluginSlotsVersion();
   const slots = pluginComposerSlots(side);
   if (slots.length === 0) return null;
@@ -68,7 +80,7 @@ export function PluginComposerSlots({ side }: { side: 'left' | 'right' }) {
         <PluginSlotView
           key={`${entry.pluginId}:${side}`}
           entry={entry}
-          props={{ position: side }}
+          props={{ position: side, sessionId, draft, busy }}
         />
       ))}
     </>

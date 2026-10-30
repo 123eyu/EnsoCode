@@ -11,6 +11,7 @@ export const EXTENSION_PLUGIN_PERMISSIONS = [
   'net.fetch',
   'session.read',
   'mcp.server',
+  'mcp.call',
 ] as const;
 export type ExtensionPluginPermission = (typeof EXTENSION_PLUGIN_PERMISSIONS)[number];
 
@@ -42,6 +43,17 @@ export interface PluginMcpContrib {
   args: string[];
   env: Record<string, string>;
 }
+/** 渲染层可调方法的超时声明；未声明的方法按默认 2 秒 */
+export interface PluginMethodContrib {
+  name: string;
+  timeoutMs: number;
+}
+export interface PluginConfigContrib {
+  key: string;
+  title: string;
+  description: string;
+  secret: boolean;
+}
 
 export interface ExtensionPluginManifest {
   schemaVersion: 1;
@@ -55,6 +67,8 @@ export interface ExtensionPluginManifest {
   permissions: ExtensionPluginPermission[];
   fs: { read: string[]; write: string[] };
   net: { domains: string[] };
+  /** 允许调用的宿主 MCP 工具名（不限服务） */
+  mcp: { tools: string[] };
   contributes: {
     agentTools: PluginAgentToolContrib[];
     commands: PluginCommandContrib[];
@@ -62,6 +76,8 @@ export interface ExtensionPluginManifest {
     triggers: PluginTriggerContrib[];
     skills: string[];
     mcpServers: PluginMcpContrib[];
+    methods: PluginMethodContrib[];
+    configuration: PluginConfigContrib[];
   };
 }
 
@@ -74,6 +90,11 @@ const TOOL = /^[a-z][a-z0-9_]*$/;
 const LOCAL_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const ENGINE = /^>=(\d+)\.(\d+)\.(\d+)$/;
+const METHOD = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const MCP_TOOL = /^[A-Za-z0-9_.-]{1,64}$/;
+const CONFIG_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
+export const MAX_METHOD_TIMEOUT_MS = 120_000;
+const MAX_CONFIG_ITEMS = 20;
 const TOP_LEVEL = new Set([
   'schemaVersion',
   'id',
@@ -86,6 +107,7 @@ const TOP_LEVEL = new Set([
   'permissions',
   'fs',
   'net',
+  'mcp',
   'contributes',
 ]);
 
@@ -180,6 +202,15 @@ export function parseExtensionPluginManifest(
       isRecord(netRaw) ? netRaw.domains : undefined,
       'net.domains',
       (d) => typeof d === 'string' && DOMAIN.test(d)
+    ),
+  };
+  const mcpRaw = raw.mcp === undefined ? {} : raw.mcp;
+  if (!isRecord(mcpRaw)) errors.push('mcp 不合法');
+  const mcp = {
+    tools: stringList(
+      isRecord(mcpRaw) ? mcpRaw.tools : undefined,
+      'mcp.tools',
+      (t) => typeof t === 'string' && MCP_TOOL.test(t)
     ),
   };
 
@@ -301,6 +332,47 @@ export function parseExtensionPluginManifest(
   }
   uniqueIds(mcpServers, 'MCP 服务');
 
+  const methods: PluginMethodContrib[] = [];
+  for (const m of list('methods')) {
+    if (
+      !isRecord(m) ||
+      typeof m.name !== 'string' ||
+      !METHOD.test(m.name) ||
+      !Number.isInteger(m.timeoutMs) ||
+      (m.timeoutMs as number) < 1000 ||
+      (m.timeoutMs as number) > MAX_METHOD_TIMEOUT_MS
+    )
+      errors.push('方法超时声明不合法（1000–120000 毫秒的整数）');
+    else methods.push({ name: m.name, timeoutMs: m.timeoutMs as number });
+  }
+  uniqueIds(methods, '方法');
+
+  const configuration: PluginConfigContrib[] = [];
+  const configRaw = list('configuration');
+  if (configRaw.length > MAX_CONFIG_ITEMS) errors.push(`配置项最多 ${MAX_CONFIG_ITEMS} 个`);
+  for (const c of configRaw) {
+    if (
+      !isRecord(c) ||
+      typeof c.key !== 'string' ||
+      !CONFIG_KEY.test(c.key) ||
+      !isNonEmptyString(c.title, 60) ||
+      (c.description !== undefined && !isNonEmptyString(c.description, 500)) ||
+      (c.secret !== undefined && typeof c.secret !== 'boolean')
+    )
+      errors.push('配置项不合法');
+    else
+      configuration.push({
+        key: c.key,
+        title: c.title as string,
+        description: typeof c.description === 'string' ? c.description : '',
+        secret: c.secret === true,
+      });
+  }
+  uniqueIds(
+    configuration.map((c) => ({ id: c.key })),
+    '配置项'
+  );
+
   const need = (present: boolean, permission: ExtensionPluginPermission, label: string) => {
     if (present && !permissions.includes(permission))
       errors.push(`${label} 需要权限 ${permission}`);
@@ -313,8 +385,18 @@ export function parseExtensionPluginManifest(
   need(fs.read.length > 0, 'fs.read', 'fs.read');
   need(fs.write.length > 0, 'fs.write', 'fs.write');
   need(net.domains.length > 0, 'net.fetch', 'net.domains');
-  if (!main && (agentTools.length > 0 || commands.length > 0 || triggers.length > 0))
-    errors.push('声明了工具、命令或补全来源时必须提供 main');
+  need(mcp.tools.length > 0, 'mcp.call', 'mcp.tools');
+  if (permissions.includes('mcp.call') && mcp.tools.length === 0)
+    errors.push('mcp.call 需要在 mcp.tools 里列出要调用的工具');
+  if (
+    !main &&
+    (agentTools.length > 0 ||
+      commands.length > 0 ||
+      triggers.length > 0 ||
+      methods.length > 0 ||
+      configuration.length > 0)
+  )
+    errors.push('声明了工具、命令、补全来源、方法或配置项时必须提供 main');
 
   if (errors.length > 0) return { ok: false, errors };
   return {
@@ -332,7 +414,17 @@ export function parseExtensionPluginManifest(
       permissions,
       fs,
       net,
-      contributes: { agentTools, commands, views, triggers, skills, mcpServers },
+      mcp,
+      contributes: {
+        agentTools,
+        commands,
+        views,
+        triggers,
+        skills,
+        mcpServers,
+        methods,
+        configuration,
+      },
     },
   };
 }

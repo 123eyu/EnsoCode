@@ -26,6 +26,10 @@ const MIME: Record<string, string> = {
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 40;
+const isConfigPatch = (v: unknown): v is Record<string, string | null> =>
+  isRecord(v) &&
+  Object.keys(v).length <= 20 &&
+  Object.values(v).every((x) => x === null || typeof x === 'string');
 const CALL_METHODS = [
   'command.run',
   'trigger.candidates',
@@ -77,6 +81,16 @@ export function registerExtensionPluginHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_UNINSTALL, async (_e, id: unknown) => {
     if (!isId(id)) return { ok: false, error: '参数不合法' };
     return plugins().uninstall(id);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_CONFIG_GET, (_e, id: unknown) => {
+    if (!isId(id)) return { ok: false, error: '参数不合法' };
+    return plugins().configView(id);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_CONFIG_SET, (_e, id: unknown, patch: unknown) => {
+    if (!isId(id) || !isConfigPatch(patch)) return { ok: false, error: '参数不合法' };
+    return plugins().setConfig(id, patch);
   });
 
   ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_CALL, async (e, raw: unknown) => {

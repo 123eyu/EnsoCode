@@ -193,4 +193,81 @@ describe('parseExtensionPluginManifest', () => {
     expect(errorsOf({ ...base(), engines: { enso: '>=9.0.0' } })).not.toEqual([]);
     expect(errorsOf({ ...base(), engines: { enso: '^0.2.0' } })).not.toEqual([]);
   });
+
+  it('长耗时方法：超时只能在 1 秒到 120 秒之间', () => {
+    const withMethods = (methods: unknown) => ({
+      ...base(),
+      contributes: { ...base().contributes, methods },
+    });
+    const ok = parseExtensionPluginManifest(
+      withMethods([{ name: 'enhance', timeoutMs: 90_000 }]),
+      '0.2.12'
+    );
+    expect(ok.ok && ok.manifest.contributes.methods).toEqual([
+      { name: 'enhance', timeoutMs: 90_000 },
+    ]);
+    expect(errorsOf(withMethods([{ name: 'enhance', timeoutMs: 120_001 }]))).not.toEqual([]);
+    expect(errorsOf(withMethods([{ name: 'enhance', timeoutMs: 500 }]))).not.toEqual([]);
+    expect(errorsOf(withMethods([{ name: 'enhance', timeoutMs: 1.5e3 + 0.5 }]))).not.toEqual([]);
+    expect(errorsOf(withMethods([{ name: '9bad', timeoutMs: 5000 }]))).not.toEqual([]);
+    expect(
+      errorsOf(
+        withMethods([
+          { name: 'a', timeoutMs: 5000 },
+          { name: 'a', timeoutMs: 6000 },
+        ])
+      )
+    ).not.toEqual([]);
+  });
+
+  it('mcp.tools 需要 mcp.call 权限，工具名限字母数字与 _ . -', () => {
+    expect(errorsOf({ ...base(), mcp: { tools: ['enhance_prompt'] } })).not.toEqual([]);
+    const ok = parseExtensionPluginManifest(
+      { ...base(), permissions: ['agent.tool', 'mcp.call'], mcp: { tools: ['enhance_prompt'] } },
+      '0.2.12'
+    );
+    expect(ok.ok && ok.manifest.mcp).toEqual({ tools: ['enhance_prompt'] });
+    expect(
+      errorsOf({ ...base(), permissions: ['agent.tool', 'mcp.call'], mcp: { tools: ['a b'] } })
+    ).not.toEqual([]);
+    expect(errorsOf({ ...base(), permissions: ['agent.tool', 'mcp.call'] })).not.toEqual([]);
+  });
+
+  it('配置项：key 唯一、secret 为布尔，且必须有 main', () => {
+    const withConfig = (configuration: unknown, patch: Record<string, unknown> = {}) => ({
+      ...base(),
+      contributes: { ...base().contributes, configuration },
+      ...patch,
+    });
+    const ok = parseExtensionPluginManifest(
+      withConfig([
+        { key: 'baseUrl', title: '地址' },
+        { key: 'token', title: 'Token', secret: true, description: '只保存在本机' },
+      ]),
+      '0.2.12'
+    );
+    expect(ok.ok && ok.manifest.contributes.configuration).toEqual([
+      { key: 'baseUrl', title: '地址', description: '', secret: false },
+      { key: 'token', title: 'Token', description: '只保存在本机', secret: true },
+    ]);
+    expect(errorsOf(withConfig([{ key: 'bad-key', title: 'x' }]))).not.toEqual([]);
+    expect(errorsOf(withConfig([{ key: 'a', title: 'x', secret: 'yes' }]))).not.toEqual([]);
+    expect(
+      errorsOf(
+        withConfig([
+          { key: 'a', title: 'x' },
+          { key: 'a', title: 'y' },
+        ])
+      )
+    ).not.toEqual([]);
+    expect(
+      errorsOf(
+        withConfig([{ key: 'a', title: 'x' }], {
+          main: undefined,
+          permissions: [],
+          contributes: { configuration: [{ key: 'a', title: 'x' }] },
+        })
+      )
+    ).not.toEqual([]);
+  });
 });

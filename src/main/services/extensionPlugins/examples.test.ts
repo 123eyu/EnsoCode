@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runPluginHost } from '../../../pluginHost/host';
-import { loadPluginRenderer } from '../../../renderer/plugins/loader';
+import { loadPluginRenderer, type PluginRendererDeps } from '../../../renderer/plugins/loader';
 import {
   pluginBlock,
   pluginComposerSlots,
@@ -66,6 +66,8 @@ beforeEach(() => {
       notify: () => true,
       composer,
       sessionMessages: async () => [],
+      mcpTools: async () => [],
+      mcpCall: async () => ({ content: '', isError: false }),
       now: () => Date.now(),
     },
   });
@@ -95,13 +97,25 @@ const ui = (pluginId: string, method: string, payload: Record<string, unknown>) 
     origin: 1,
   });
 
-async function loadUi(dir: string, pluginId: string) {
-  return loadPluginRenderer(pluginId, 'ui.js', {
-    importModule: (_id, rel) => import(pathToFileURL(join(EXAMPLES, dir, rel)).href),
-    react: await import('react'),
-    sessionId: () => 'c1',
-    call: async () => null,
-  });
+async function loadUi(
+  dir: string,
+  pluginId: string,
+  extra: Partial<PluginRendererDeps> = {},
+  options: { draft?: boolean } = {}
+) {
+  return loadPluginRenderer(
+    pluginId,
+    'ui.js',
+    {
+      importModule: (_id, rel) => import(pathToFileURL(join(EXAMPLES, dir, rel)).href),
+      react: await import('react'),
+      sessionId: () => 'c1',
+      call: async () => null,
+      draft: () => ({ ok: false, code: 'NO_COMPOSER', error: 'no composer' }),
+      ...extra,
+    },
+    options
+  );
 }
 
 describe('示例插件', () => {

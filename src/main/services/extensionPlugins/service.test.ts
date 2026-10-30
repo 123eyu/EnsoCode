@@ -1,11 +1,11 @@
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runPluginHost } from '../../../pluginHost/host';
 import { readRegistry } from './registry';
-import { ExtensionPluginService } from './service';
+import { ExtensionPluginService, uiCallTimeout } from './service';
 
 /** 用进程内的插件宿主替代真实子进程，测试完整往返 */
 class InProcessChild extends EventEmitter {
@@ -79,6 +79,8 @@ beforeEach(() => {
       notify: () => true,
       composer: async () => null,
       sessionMessages: async () => [],
+      mcpTools: async () => [],
+      mcpCall: async () => ({ content: '', isError: false }),
       now: () => Date.now(),
     },
   });
@@ -240,5 +242,103 @@ describe('ExtensionPluginService', () => {
       },
     });
     expect(server?.args?.[0]).toMatch(/packages\/example\.demo\/[^/]+\/server\.js$/);
+  });
+
+  it('处理器上下文带上 Main 推导的项目根', async () => {
+    await install({
+      'enso-plugin.json': manifest(),
+      'main.mjs': `export function activate(enso) { enso.tools.register('lookup', async (args, ctx) => String(ctx.projectRoot)); }`,
+    });
+    service.setEnabled('example.demo', true);
+    await expect(
+      service.callTool({
+        toolName: 'plugin_example-demo__lookup',
+        args: {},
+        sessionId: 's1',
+        projectRoot: '/work/repo',
+      })
+    ).resolves.toEqual({ content: '/work/repo' });
+  });
+
+  describe('配置项', () => {
+    const configManifest = () =>
+      manifest({
+        contributes: {
+          agentTools: [{ name: 'lookup', description: '查询', parameters: { type: 'object' } }],
+          configuration: [
+            { key: 'baseUrl', title: '地址' },
+            { key: 'token', title: 'Token', secret: true },
+          ],
+        },
+      });
+    const readsConfig = `export function activate(enso) { enso.tools.register('lookup', async () => JSON.stringify(await enso.config.get())); }`;
+
+    it('停用状态也能配置；密钥不回显，只告诉界面是否已设置', async () => {
+      await install({ 'enso-plugin.json': configManifest(), 'main.mjs': readsConfig });
+      expect(service.setConfig('example.demo', { baseUrl: 'https://x', token: 'sk-1' })).toEqual({
+        ok: true,
+      });
+      expect(service.configView('example.demo')).toEqual({
+        ok: true,
+        fields: [
+          {
+            key: 'baseUrl',
+            title: '地址',
+            description: '',
+            secret: false,
+            set: true,
+            value: 'https://x',
+          },
+          { key: 'token', title: 'Token', description: '', secret: true, set: true },
+        ],
+      });
+      const file = join(root, 'config', 'example.demo.json');
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    });
+
+    it('插件进程经 config.get 读到完整配置', async () => {
+      await install({ 'enso-plugin.json': configManifest(), 'main.mjs': readsConfig });
+      service.setConfig('example.demo', { baseUrl: 'https://x', token: 'sk-1' });
+      service.setEnabled('example.demo', true);
+      const result = await service.callTool({
+        toolName: 'plugin_example-demo__lookup',
+        args: {},
+        sessionId: 's1',
+        projectRoot: null,
+      });
+      expect(JSON.parse(result.content)).toEqual({ baseUrl: 'https://x', token: 'sk-1' });
+    });
+
+    it('省略的键保持不变，null 清除；未知键与过长值拒绝', async () => {
+      await install({ 'enso-plugin.json': configManifest(), 'main.mjs': readsConfig });
+      service.setConfig('example.demo', { baseUrl: 'https://x', token: 'sk-1' });
+      service.setConfig('example.demo', { baseUrl: 'https://y' });
+      expect(service.configValues('example.demo')).toEqual({ baseUrl: 'https://y', token: 'sk-1' });
+      service.setConfig('example.demo', { token: null });
+      expect(service.configValues('example.demo')).toEqual({ baseUrl: 'https://y' });
+      expect(service.setConfig('example.demo', { other: 'x' }).ok).toBe(false);
+      expect(service.setConfig('example.demo', { baseUrl: 'x'.repeat(5000) }).ok).toBe(false);
+      expect(service.setConfig('missing.plugin', { baseUrl: 'x' }).ok).toBe(false);
+    });
+
+    it('卸载时删除配置文件', async () => {
+      await install({ 'enso-plugin.json': configManifest(), 'main.mjs': readsConfig });
+      service.setConfig('example.demo', { token: 'sk-1' });
+      await service.uninstall('example.demo');
+      expect(existsSync(join(root, 'config', 'example.demo.json'))).toBe(false);
+    });
+  });
+});
+
+describe('uiCallTimeout', () => {
+  const parsed = {
+    contributes: { methods: [{ name: 'enhance', timeoutMs: 90_000 }] },
+  } as Parameters<typeof uiCallTimeout>[0];
+
+  it('渲染方法按清单声明的超时，未声明的仍是 2 秒；命令 60 秒', () => {
+    expect(uiCallTimeout(parsed, 'renderer.call', { method: 'enhance' })).toBe(90_000);
+    expect(uiCallTimeout(parsed, 'renderer.call', { method: 'other' })).toBe(2_000);
+    expect(uiCallTimeout(parsed, 'trigger.candidates', { name: 'enhance' })).toBe(2_000);
+    expect(uiCallTimeout(parsed, 'command.run', { id: 'x' })).toBe(60_000);
   });
 });

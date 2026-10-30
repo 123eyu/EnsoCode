@@ -34,7 +34,16 @@ const call = (
   id: string,
   method: 'tool.execute' | 'command.run' | 'renderer.call',
   payload: unknown
-) => ({ t: 'call', id, method, payload, invocationId: `inv-${id}`, sessionId: 's1' }) as const;
+) =>
+  ({
+    t: 'call',
+    id,
+    method,
+    payload,
+    invocationId: `inv-${id}`,
+    sessionId: 's1',
+    projectRoot: '/repo',
+  }) as const;
 
 describe('runPluginHost', () => {
   it('加载后上报已注册的工具、命令、补全和渲染方法', async () => {

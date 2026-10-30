@@ -61,7 +61,12 @@ export class PluginProcess {
   async call(
     method: PluginCallMethod,
     payload: unknown,
-    options: { invocationId: string; sessionId: string | null; timeoutMs: number }
+    options: {
+      invocationId: string;
+      sessionId: string | null;
+      projectRoot: string | null;
+      timeoutMs: number;
+    }
   ): Promise<unknown> {
     await this.ready();
     const child = this.child;
@@ -83,6 +88,7 @@ export class PluginProcess {
         payload,
         invocationId: options.invocationId,
         sessionId: options.sessionId,
+        projectRoot: options.projectRoot,
       });
     });
   }

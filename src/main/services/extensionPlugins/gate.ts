@@ -14,6 +14,7 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_FETCH_BYTES = 5 * 1024 * 1024;
 const MAX_DRAFT_BYTES = 32 * 1024;
 const MAX_REDIRECTS = 5;
+const MAX_MCP_ARGS_BYTES = 64 * 1024;
 
 export type ComposerOp = 'readDraft' | 'insertText' | 'replaceDraft';
 
@@ -21,6 +22,18 @@ export type ComposerOp = 'readDraft' | 'insertText' | 'replaceDraft';
 export interface ComposerTarget {
   sessionId: string;
   origin: number | null;
+}
+
+/** 宿主 MCP 调用的会话上下文：Main 据此选用会话所属项目的 MCP 配置 */
+export interface McpTarget {
+  sessionId: string | null;
+  projectRoot: string | null;
+}
+
+export interface McpToolInfo {
+  server: string;
+  name: string;
+  description: string;
 }
 
 export interface GateDeps {
@@ -35,6 +48,16 @@ export interface GateDeps {
     payload: Record<string, unknown>
   ): Promise<unknown>;
   sessionMessages(sessionId: string): Promise<unknown>;
+  /** 插件自己的配置值（含密钥）；只交给插件进程，不进渲染层 */
+  config(pluginId: string): Record<string, string>;
+  mcpTools(target: McpTarget, signal: AbortSignal): Promise<McpToolInfo[]>;
+  mcpCall(
+    target: McpTarget,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal
+  ): Promise<{ content: string; isError: boolean }>;
   now(): number;
 }
 
@@ -52,6 +75,7 @@ export interface InvocationInit {
 interface Invocation extends InvocationInit {
   createdAt: number;
   cancelled: boolean;
+  controller: AbortController;
 }
 
 /** 调用上下文表：插件只能拿着 Main 发的 id 回来，会话与项目根都不由插件上报 */
@@ -61,7 +85,12 @@ export class InvocationTable {
 
   create(init: InvocationInit): string {
     const id = randomUUID();
-    this.table.set(id, { ...init, createdAt: this.now(), cancelled: false });
+    this.table.set(id, {
+      ...init,
+      createdAt: this.now(),
+      cancelled: false,
+      controller: new AbortController(),
+    });
     return id;
   }
   get(id: string | undefined): Invocation | undefined {
@@ -69,7 +98,9 @@ export class InvocationTable {
   }
   cancel(id: string): void {
     const entry = this.table.get(id);
-    if (entry) entry.cancelled = true;
+    if (!entry) return;
+    entry.cancelled = true;
+    entry.controller.abort();
   }
   /** 手势调用结束后保留到令牌过期，供插件稍后写草稿；非手势调用结束即删 */
   finish(id: string): void {
@@ -84,7 +115,10 @@ export class InvocationTable {
   }
   cancelPlugin(pluginId: string): void {
     for (const entry of this.table.values())
-      if (entry.pluginId === pluginId) entry.cancelled = true;
+      if (entry.pluginId === pluginId) {
+        entry.cancelled = true;
+        entry.controller.abort();
+      }
   }
 }
 
@@ -178,6 +212,39 @@ export class PluginHostGate {
         const inv = invocation();
         if (!inv.sessionId) throw pluginError('NO_SESSION', '调用不属于任何会话');
         return this.deps.sessionMessages(inv.sessionId);
+      }
+      case 'config.get':
+        return this.deps.config(pluginId);
+      case 'mcp.tools': {
+        permit('mcp.call');
+        const inv = invocation();
+        const allowed = new Set(manifest.mcp.tools);
+        const tools = await this.deps.mcpTools(
+          {
+            sessionId: inv.sessionId,
+            projectRoot: inv.projectRoot,
+          },
+          inv.controller.signal
+        );
+        return tools.filter((t) => allowed.has(t.name));
+      }
+      case 'mcp.call': {
+        permit('mcp.call');
+        if (typeof a.tool !== 'string' || !manifest.mcp.tools.includes(a.tool))
+          throw pluginError('PERMISSION_DENIED', `清单没有声明 MCP 工具：${String(a.tool)}`);
+        const inv = invocation();
+        if (typeof a.server !== 'string' || a.server.length === 0 || a.server.length > 128)
+          throw pluginError('INVALID_ARGS', 'server 不合法');
+        const args = a.args === undefined ? {} : a.args;
+        if (!isRecord(args) || utf8Bytes(JSON.stringify(args)) > MAX_MCP_ARGS_BYTES)
+          throw pluginError('INVALID_ARGS', 'args 必须是不超过 64KB 的对象');
+        return this.deps.mcpCall(
+          { sessionId: inv.sessionId, projectRoot: inv.projectRoot },
+          a.server,
+          a.tool,
+          args,
+          inv.controller.signal
+        );
       }
     }
   }

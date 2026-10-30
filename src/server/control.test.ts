@@ -48,4 +48,22 @@ describe('parseControlCommand', () => {
     });
     expect(parse({ cmd: 'plugin', action: 'explode' })).toEqual({ error: 'unknown plugin action' });
   });
+
+  it('插件配置命令：config-get 要 id，config-set 的值只能是字符串或 null', () => {
+    const parse = (v: unknown) => parseControlCommand(JSON.stringify(v));
+    expect(parse({ cmd: 'plugin', action: 'config-get', id: 'a.b' })).toEqual({
+      cmd: 'plugin',
+      action: 'config-get',
+      id: 'a.b',
+    });
+    expect(
+      parse({ cmd: 'plugin', action: 'config-set', id: 'a.b', values: { k: 'v', t: null } })
+    ).toEqual({ cmd: 'plugin', action: 'config-set', id: 'a.b', values: { k: 'v', t: null } });
+    expect(parse({ cmd: 'plugin', action: 'config-set', id: 'a.b', values: { k: 1 } })).toEqual({
+      error: 'plugin config-set requires id and string values',
+    });
+    expect(parse({ cmd: 'plugin', action: 'config-set', values: {} })).toEqual({
+      error: 'plugin config-set requires id and string values',
+    });
+  });
 });

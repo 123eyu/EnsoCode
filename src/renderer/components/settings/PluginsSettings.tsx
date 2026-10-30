@@ -1,12 +1,14 @@
 import type {
+  ExtensionPluginConfigField,
   ExtensionPluginInstallPreview,
   ExtensionPluginSummary,
 } from '@shared/extensionPlugins/types';
 import type { InstalledPluginInfo, PluginComponentSummary, PluginEntry } from '@shared/types';
-import { ChevronRight, Puzzle, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronRight, Puzzle, RefreshCw, Settings2, Trash2 } from 'lucide-react';
 import * as React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { useI18n } from '@/i18n';
@@ -14,11 +16,93 @@ import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
 import { NewSessionBadge } from './NewSessionBadge';
 
+/** 插件配置表单：密钥不回显，留空保持不变 */
+function ExtensionPluginConfigForm({ pluginId }: { pluginId: string }) {
+  const { t } = useI18n();
+  const [fields, setFields] = React.useState<ExtensionPluginConfigField[]>([]);
+  const [draft, setDraft] = React.useState<Record<string, string | null>>({});
+  const [message, setMessage] = React.useState<{ error: boolean; text: string } | null>(null);
+
+  const load = React.useCallback(async () => {
+    const result = await window.electronAPI.extensionPlugins.configGet(pluginId);
+    if (result.ok) setFields(result.fields);
+    else setMessage({ error: true, text: result.error });
+    setDraft({});
+  }, [pluginId]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async () => {
+    const patch = Object.fromEntries(
+      Object.entries(draft).filter(([key, value]) => {
+        const field = fields.find((f) => f.key === key);
+        return value === null || !(field?.secret && value === '');
+      })
+    );
+    const result = await window.electronAPI.extensionPlugins.configSet(pluginId, patch);
+    setMessage(
+      result.ok
+        ? { error: false, text: t('Saved. New calls use it right away.') }
+        : { error: true, text: result.error ?? '' }
+    );
+    if (result.ok) await load();
+  };
+
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3">
+      {fields.map((field) => (
+        <div key={field.key} className="space-y-1">
+          <p className="text-sm">
+            {field.title}
+            <span className="ml-2 font-mono text-muted-foreground text-xs">{field.key}</span>
+          </p>
+          {field.description && (
+            <p className="text-muted-foreground text-xs">{field.description}</p>
+          )}
+          <div className="flex items-center gap-2">
+            <Input
+              type={field.secret ? 'password' : 'text'}
+              autoComplete="off"
+              value={draft[field.key] ?? (field.secret ? '' : (field.value ?? ''))}
+              placeholder={
+                field.secret && field.set ? t('Set (leave blank to keep)') : t('Not set')
+              }
+              onChange={(event) =>
+                setDraft((prev) => ({ ...prev, [field.key]: event.target.value }))
+              }
+            />
+            {field.set && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setDraft((prev) => ({ ...prev, [field.key]: null }))}
+              >
+                {t('Clear value')}
+              </Button>
+            )}
+          </div>
+        </div>
+      ))}
+      {message && (
+        <p className={cn('text-xs', message.error ? 'text-destructive' : 'text-muted-foreground')}>
+          {message.text}
+        </p>
+      )}
+      <Button size="sm" disabled={Object.keys(draft).length === 0} onClick={() => void save()}>
+        {t('Save')}
+      </Button>
+    </div>
+  );
+}
+
 /** Enso 自己的插件：安装时展示权限并征得同意，更新扩大授权要重新同意 */
 function ExtensionPluginsSection() {
   const { t } = useI18n();
   const [plugins, setPlugins] = React.useState<ExtensionPluginSummary[]>([]);
   const [preview, setPreview] = React.useState<ExtensionPluginInstallPreview | null>(null);
+  const [configuring, setConfiguring] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -100,6 +184,12 @@ function ExtensionPluginsSection() {
               {server.command} {server.args.join(' ')}
             </p>
           ))}
+          {preview.mcpTools.length > 0 && (
+            <p className="text-muted-foreground text-xs">
+              {t('Host MCP tools it may call')}：
+              <span className="font-mono">{preview.mcpTools.join(', ')}</span>
+            </p>
+          )}
           {preview.warnings.map((warning) => (
             <p key={warning} className="text-muted-foreground text-xs">
               {warning}
@@ -116,54 +206,72 @@ function ExtensionPluginsSection() {
         </div>
       )}
       {plugins.map((plugin) => (
-        <div key={plugin.id} className="flex items-center justify-between gap-3 py-1">
-          <div className="min-w-0">
-            <p className="truncate text-sm">
-              {plugin.name}
-              <span className="ml-2 text-muted-foreground text-xs">{plugin.version}</span>
-              {plugin.state === 'crashed' && (
-                <Badge variant="destructive" className="ml-2">
-                  {t('Stopped after crashes')}
-                </Badge>
-              )}
-            </p>
-            {plugin.pendingVersion && (
-              <p className="text-muted-foreground text-xs">
-                {t('{{version}} asks for more and is waiting for approval', {
-                  version: plugin.pendingVersion,
-                })}
-                <button
-                  type="button"
-                  className="ml-2 underline"
-                  onClick={() => void window.electronAPI.extensionPlugins.approvePending(plugin.id)}
-                >
-                  {t('Allow')}
-                </button>
-                <button
-                  type="button"
-                  className="ml-2 underline"
-                  onClick={() => void window.electronAPI.extensionPlugins.rejectPending(plugin.id)}
-                >
-                  {t('Keep current')}
-                </button>
+        <div key={plugin.id} className="space-y-2 py-1">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm">
+                {plugin.name}
+                <span className="ml-2 text-muted-foreground text-xs">{plugin.version}</span>
+                {plugin.state === 'crashed' && (
+                  <Badge variant="destructive" className="ml-2">
+                    {t('Stopped after crashes')}
+                  </Badge>
+                )}
               </p>
-            )}
+              {plugin.pendingVersion && (
+                <p className="text-muted-foreground text-xs">
+                  {t('{{version}} asks for more and is waiting for approval', {
+                    version: plugin.pendingVersion,
+                  })}
+                  <button
+                    type="button"
+                    className="ml-2 underline"
+                    onClick={() =>
+                      void window.electronAPI.extensionPlugins.approvePending(plugin.id)
+                    }
+                  >
+                    {t('Allow')}
+                  </button>
+                  <button
+                    type="button"
+                    className="ml-2 underline"
+                    onClick={() =>
+                      void window.electronAPI.extensionPlugins.rejectPending(plugin.id)
+                    }
+                  >
+                    {t('Keep current')}
+                  </button>
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {plugin.configurable && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label={t('Configure')}
+                  title={t('Configure')}
+                  onClick={() => setConfiguring((id) => (id === plugin.id ? null : plugin.id))}
+                >
+                  <Settings2 className="size-4" />
+                </Button>
+              )}
+              <Switch
+                checked={plugin.state === 'enabled'}
+                onCheckedChange={(enabled) =>
+                  void window.electronAPI.extensionPlugins.setEnabled(plugin.id, enabled)
+                }
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => void window.electronAPI.extensionPlugins.uninstall(plugin.id)}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={plugin.state === 'enabled'}
-              onCheckedChange={(enabled) =>
-                void window.electronAPI.extensionPlugins.setEnabled(plugin.id, enabled)
-              }
-            />
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={() => void window.electronAPI.extensionPlugins.uninstall(plugin.id)}
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
+          {configuring === plugin.id && <ExtensionPluginConfigForm pluginId={plugin.id} />}
         </div>
       ))}
     </div>
