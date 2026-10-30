@@ -36,6 +36,7 @@ import { useI18n } from '@/i18n';
 import { effectiveKeybindings, eventToBinding, formatBinding } from '@/lib/keybindings';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
+import { PluginComposerSlots } from '../../plugins/slots';
 import {
   registerComposerFocus,
   registerComposerInsert,
@@ -846,6 +847,7 @@ export function Composer({
             >
               <ImagePlus className="h-3.5 w-3.5" />
             </button>
+            <PluginComposerSlots side="left" />
             {holdVoice ? (
               <HoldToTalkToggle
                 active={holdToTalk}
@@ -871,6 +873,7 @@ export function Composer({
               />
             ) : null}
             {toolbar}
+            <PluginComposerSlots side="right" />
             {privacyScan && (privacyScan.blocked.length > 0 || privacyScan.masked > 0) && (
               <span
                 className={cn(

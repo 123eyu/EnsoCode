@@ -85,6 +85,11 @@ export function pluginMessageActions(position: 'left' | 'right'): PluginSlotEntr
   return entries.filter((item) => item.slot === 'message.action' && item.position === position);
 }
 
+export function pluginComposerSlots(side: 'left' | 'right'): PluginSlotEntry[] {
+  const slot = side === 'left' ? 'composer.left' : 'composer.right';
+  return entries.filter((item) => item.slot === slot);
+}
+
 export function pluginToolCard(pluginId: string, toolName: string): PluginSlotEntry | undefined {
   return entries.find(
     (item) => item.slot === 'tool.card' && item.pluginId === pluginId && item.toolName === toolName

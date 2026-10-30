@@ -1,6 +1,6 @@
 import { parsePluginToolName } from '@shared/extensionPlugins/toolName';
 import { PluginSlotView } from './loader';
-import { pluginBlock, pluginMessageActions, pluginToolCard } from './registry';
+import { pluginBlock, pluginComposerSlots, pluginMessageActions, pluginToolCard } from './registry';
 import { usePluginSlotsVersion } from './usePluginSlots';
 
 export function PluginMessageActions({ position }: { position: 'left' | 'right' }) {
@@ -46,4 +46,21 @@ export function PluginBlock({
   const entry = pluginBlock(pluginId, lang);
   if (!entry) return null;
   return <PluginSlotView entry={entry} props={{ language: lang, source }} />;
+}
+
+export function PluginComposerSlots({ side }: { side: 'left' | 'right' }) {
+  usePluginSlotsVersion();
+  const slots = pluginComposerSlots(side);
+  if (slots.length === 0) return null;
+  return (
+    <>
+      {slots.map((entry) => (
+        <PluginSlotView
+          key={`${entry.pluginId}:${side}`}
+          entry={entry}
+          props={{ position: side }}
+        />
+      ))}
+    </>
+  );
 }

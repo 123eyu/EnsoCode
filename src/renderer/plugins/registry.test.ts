@@ -3,6 +3,7 @@ import {
   clearPluginSlots,
   parsePluginFence,
   pluginBlock,
+  pluginComposerSlots,
   pluginMessageActions,
   pluginToolCard,
   registerPluginSlot,
@@ -66,5 +67,12 @@ describe('插件挂点登记', () => {
     expect(parsePluginFence('mermaid')).toBeNull();
     expect(parsePluginFence('NotAnId:x')).toBeNull();
     expect(parsePluginFence('a.b:')).toBeNull();
+  });
+
+  it('输入框挂点按左右取回', () => {
+    registerPluginSlot({ pluginId: 'a.b', slot: 'composer.left', component });
+    registerPluginSlot({ pluginId: 'a.b', slot: 'composer.right', component });
+    expect(pluginComposerSlots('left')).toHaveLength(1);
+    expect(pluginComposerSlots('right')).toHaveLength(1);
   });
 });
