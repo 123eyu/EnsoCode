@@ -867,6 +867,17 @@ export const IPC_PRODUCT_COVERAGE = {
   BOT_TEMPLATES_CHANGED: excluded('Bot mode template library change notification transport.'),
   COMPUTER_CAPABILITIES: surfaces('coding-tools.computer'),
   COMPUTER_OPEN_PERMISSIONS: surfaces('coding-tools.computer'),
+  EXTENSION_PLUGINS_LIST: excluded('Enso 插件管理页：列出已安装插件。'),
+  EXTENSION_PLUGINS_CHANGED: excluded('Enso 插件登记变更的跨窗口通知。'),
+  EXTENSION_PLUGINS_COMMIT: excluded('Enso 插件安装确认：用户同意权限后落盘。'),
+  EXTENSION_PLUGINS_DISCARD: excluded('Enso 插件安装取消：丢弃暂存。'),
+  EXTENSION_PLUGINS_SET_ENABLED: excluded('Enso 插件启用 / 停用开关。'),
+  EXTENSION_PLUGINS_APPROVE_PENDING: excluded('Enso 插件更新扩大授权后的重新同意。'),
+  EXTENSION_PLUGINS_REJECT_PENDING: excluded('Enso 插件更新扩大授权后的拒绝，保留旧版本。'),
+  EXTENSION_PLUGINS_UNINSTALL: excluded('Enso 插件卸载。'),
+  EXTENSION_PLUGINS_PICK_AND_STAGE: excluded('桌面专用：弹系统对话框选择插件目录或 zip。'),
+  EXTENSION_PLUGINS_CALL: excluded('Enso 插件运行期调用：命令、挂件、侧栏页面与补全。'),
+  EXTENSION_PLUGINS_ASSET: excluded('Enso 插件渲染资源读取：只收插件 id 与相对路径。'),
 } satisfies Record<keyof typeof IPC_CHANNELS, CoverageDisposition>;
 
 export const AUTHORITATIVE_COVERAGE_SOURCES = {

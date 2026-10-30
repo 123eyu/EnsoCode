@@ -1592,6 +1592,47 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_SEARCH_QUERY, request),
   },
 
+  extensionPlugins: {
+    list: (): Promise<ExtensionPluginSummary[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_LIST),
+    onChanged: (callback: () => void): (() => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.EXTENSION_PLUGINS_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.EXTENSION_PLUGINS_CHANGED, listener);
+    },
+    pickAndStage: (
+      kind: 'dir' | 'zip'
+    ): Promise<
+      | { ok: true; preview: ExtensionPluginInstallPreview }
+      | { ok: true; cancelled: true }
+      | { ok: false; error: string }
+    > => ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_PICK_AND_STAGE, kind),
+    commit: (token: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_COMMIT, token),
+    discard: (token: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_DISCARD, token),
+    setEnabled: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_SET_ENABLED, id, enabled),
+    approvePending: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_APPROVE_PENDING, id),
+    rejectPending: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_REJECT_PENDING, id),
+    uninstall: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_UNINSTALL, id),
+    call: (request: {
+      pluginId: string;
+      method: 'command.run' | 'trigger.candidates' | 'trigger.pick' | 'renderer.call';
+      payload: Record<string, unknown>;
+      sessionId: string | null;
+    }): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_CALL, request),
+    asset: (
+      pluginId: string,
+      rel: string
+    ): Promise<{ ok: true; mime: string; base64: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PLUGINS_ASSET, pluginId, rel),
+  },
+
   /** 仅远程浏览器里的 web-preload 提供 */
   remote: undefined as RemoteApi | undefined,
 };
@@ -1601,3 +1642,7 @@ export type ElectronAPI = typeof electronAPI;
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
 import type { ComputerCapabilities } from '@shared/computer/types';
+import type {
+  ExtensionPluginInstallPreview,
+  ExtensionPluginSummary,
+} from '@shared/extensionPlugins/types';

@@ -497,6 +497,21 @@ export const IPC_CHANNELS = {
   BOT_TEMPLATES_GET: 'bots:templates-get',
   BOT_TEMPLATES_SAVE: 'bots:templates-save',
   BOT_TEMPLATES_CHANGED: 'bots:templates-changed',
+  /** Enso 插件：管理操作只能在本机界面或服务端 CLI 上做 */
+  EXTENSION_PLUGINS_LIST: 'extension-plugins:list',
+  EXTENSION_PLUGINS_CHANGED: 'extension-plugins:changed',
+  EXTENSION_PLUGINS_COMMIT: 'extension-plugins:commit',
+  EXTENSION_PLUGINS_DISCARD: 'extension-plugins:discard',
+  EXTENSION_PLUGINS_SET_ENABLED: 'extension-plugins:set-enabled',
+  EXTENSION_PLUGINS_APPROVE_PENDING: 'extension-plugins:approve-pending',
+  EXTENSION_PLUGINS_REJECT_PENDING: 'extension-plugins:reject-pending',
+  EXTENSION_PLUGINS_UNINSTALL: 'extension-plugins:uninstall',
+  /** 桌面专用：弹系统对话框选目录或 zip，远端不可调 */
+  EXTENSION_PLUGINS_PICK_AND_STAGE: 'extension-plugins:pick-and-stage',
+  /** 运行期：界面发起的插件调用（命令、挂件、侧栏页面、补全），算用户手势 */
+  EXTENSION_PLUGINS_CALL: 'extension-plugins:call',
+  /** 运行期：按插件 id + 相对路径取渲染资源，渲染层不传磁盘路径 */
+  EXTENSION_PLUGINS_ASSET: 'extension-plugins:asset',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

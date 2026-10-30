@@ -1,3 +1,7 @@
+import type {
+  ExtensionPluginInstallPreview,
+  ExtensionPluginSummary,
+} from '@shared/extensionPlugins/types';
 import type { InstalledPluginInfo, PluginComponentSummary, PluginEntry } from '@shared/types';
 import { ChevronRight, Puzzle, RefreshCw, Trash2 } from 'lucide-react';
 import * as React from 'react';
@@ -9,6 +13,162 @@ import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/settings';
 import { NewSessionBadge } from './NewSessionBadge';
+
+/** Enso 自己的插件：安装时展示权限并征得同意，更新扩大授权要重新同意 */
+function ExtensionPluginsSection() {
+  const { t } = useI18n();
+  const [plugins, setPlugins] = React.useState<ExtensionPluginSummary[]>([]);
+  const [preview, setPreview] = React.useState<ExtensionPluginInstallPreview | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const refresh = React.useCallback(async () => {
+    try {
+      setPlugins(await window.electronAPI.extensionPlugins.list());
+    } catch {
+      setPlugins([]);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refresh();
+    return window.electronAPI.extensionPlugins.onChanged(() => void refresh());
+  }, [refresh]);
+
+  const stage = async (kind: 'dir' | 'zip') => {
+    setError(null);
+    const result = await window.electronAPI.extensionPlugins.pickAndStage(kind);
+    if (!result.ok) setError(result.error);
+    else if (!('cancelled' in result)) setPreview(result.preview);
+  };
+
+  const commit = async () => {
+    if (!preview) return;
+    setBusy(true);
+    const result = await window.electronAPI.extensionPlugins.commit(preview.token);
+    setBusy(false);
+    if (!result.ok) setError(result.error ?? t('Install failed'));
+    setPreview(null);
+  };
+
+  const discard = () => {
+    if (preview) void window.electronAPI.extensionPlugins.discard(preview.token);
+    setPreview(null);
+  };
+
+  return (
+    <div className="space-y-3" data-settings-row="plugins.enso">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h3 className="font-medium text-lg">
+            {t('Enso plugins')}
+            <NewSessionBadge />
+          </h3>
+          <p className="text-muted-foreground text-sm">
+            {t(
+              'Installing a plugin lets it run code on this machine. Review what it asks for before confirming.'
+            )}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => void stage('dir')}>
+            {t('Install from folder')}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void stage('zip')}>
+            {t('Install from zip')}
+          </Button>
+        </div>
+      </div>
+      {error && <p className="text-destructive text-sm">{error}</p>}
+      {preview && (
+        <div className="space-y-2 rounded-md border border-border p-3">
+          <p className="font-medium text-sm">
+            {preview.name} {preview.version}
+            {preview.existingVersion && (
+              <span className="ml-2 text-muted-foreground">
+                {t('updating from {{version}}', { version: preview.existingVersion })}
+              </span>
+            )}
+          </p>
+          <p className="text-muted-foreground text-xs">
+            {preview.permissions.length > 0
+              ? preview.permissions.join(' · ')
+              : t('No special permissions')}
+          </p>
+          {preview.mcpServers.map((server) => (
+            <p key={server.name} className="font-mono text-xs">
+              {server.command} {server.args.join(' ')}
+            </p>
+          ))}
+          {preview.warnings.map((warning) => (
+            <p key={warning} className="text-muted-foreground text-xs">
+              {warning}
+            </p>
+          ))}
+          <div className="flex gap-2">
+            <Button size="sm" disabled={busy} onClick={() => void commit()}>
+              {busy ? <Spinner /> : t('Install')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={discard}>
+              {t('Cancel')}
+            </Button>
+          </div>
+        </div>
+      )}
+      {plugins.map((plugin) => (
+        <div key={plugin.id} className="flex items-center justify-between gap-3 py-1">
+          <div className="min-w-0">
+            <p className="truncate text-sm">
+              {plugin.name}
+              <span className="ml-2 text-muted-foreground text-xs">{plugin.version}</span>
+              {plugin.state === 'crashed' && (
+                <Badge variant="destructive" className="ml-2">
+                  {t('Stopped after crashes')}
+                </Badge>
+              )}
+            </p>
+            {plugin.pendingVersion && (
+              <p className="text-muted-foreground text-xs">
+                {t('{{version}} asks for more and is waiting for approval', {
+                  version: plugin.pendingVersion,
+                })}
+                <button
+                  type="button"
+                  className="ml-2 underline"
+                  onClick={() => void window.electronAPI.extensionPlugins.approvePending(plugin.id)}
+                >
+                  {t('Allow')}
+                </button>
+                <button
+                  type="button"
+                  className="ml-2 underline"
+                  onClick={() => void window.electronAPI.extensionPlugins.rejectPending(plugin.id)}
+                >
+                  {t('Keep current')}
+                </button>
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={plugin.state === 'enabled'}
+              onCheckedChange={(enabled) =>
+                void window.electronAPI.extensionPlugins.setEnabled(plugin.id, enabled)
+              }
+            />
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => void window.electronAPI.extensionPlugins.uninstall(plugin.id)}
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function componentCounts(
   components: PluginComponentSummary,
@@ -157,6 +317,7 @@ export function PluginsSettings() {
 
   return (
     <div className="space-y-4">
+      <ExtensionPluginsSection />
       <div className="flex items-end justify-between gap-4" data-settings-row="plugins.root">
         <div>
           <h3 className="font-medium text-lg">
