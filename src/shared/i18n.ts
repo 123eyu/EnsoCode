@@ -738,6 +738,7 @@ export const zhTranslations: Record<string, string> = {
   'Mention suggestions': '提及建议',
   'Command suggestions': '命令建议',
   'Plugin suggestions': '插件建议',
+  'Plugin is not enabled': '插件未启用',
   'Type @ to choose a file or Agent': '输入 @ 选择文件或 Agent',
   Recipient: '接收者',
   'Remove Agent recipient': '移除 Agent 接收者',

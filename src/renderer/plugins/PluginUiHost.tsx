@@ -3,6 +3,7 @@ import { useSessionsStore } from '@/stores/sessions';
 import { handleDraftRequest } from './draftBridge';
 import { createRendererDeps, loadPluginRenderer } from './loader';
 import { setPluginTriggers } from './triggers';
+import { setPluginViews } from './viewBridge';
 
 /** 挂一次：启用插件的渲染模块在宿主页面加载，登记挂点；停用或变更时收回 */
 export function PluginUiHost() {
@@ -16,6 +17,17 @@ export function PluginUiHost() {
       handles = [];
       void window.electronAPI.extensionPlugins.list().then(async (list) => {
         if (mine !== generation) return;
+        setPluginViews(
+          list
+            .filter((plugin) => plugin.state === 'enabled')
+            .flatMap((plugin) =>
+              plugin.views.map((view) => ({
+                pluginId: plugin.id,
+                pluginName: plugin.name,
+                ...view,
+              }))
+            )
+        );
         setPluginTriggers(
           list
             .filter((plugin) => plugin.state === 'enabled')
@@ -53,6 +65,7 @@ export function PluginUiHost() {
       unsubscribe();
       unsubscribeDraft();
       setPluginTriggers([]);
+      setPluginViews([]);
       for (const handle of handles) handle.dispose();
     };
   }, []);

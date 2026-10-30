@@ -106,7 +106,7 @@ export class ExtensionPluginService {
             description,
           })),
           commands: manifest.contributes.commands,
-          views: manifest.contributes.views.map(({ id, title }) => ({ id, title })),
+          views: manifest.contributes.views.map(({ id, title, entry }) => ({ id, title, entry })),
           triggers: manifest.contributes.triggers,
           hasRenderer: manifest.renderer !== undefined,
           ...(manifest.renderer ? { renderer: manifest.renderer } : {}),
