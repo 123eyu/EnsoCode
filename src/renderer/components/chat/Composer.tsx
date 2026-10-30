@@ -39,6 +39,11 @@ import { useSettingsStore } from '@/stores/settings';
 import { registerDraftTarget } from '../../plugins/draftBridge';
 import { PluginComposerSlots } from '../../plugins/slots';
 import {
+  type PluginCandidate,
+  pickPluginCandidate,
+  usePluginTriggerCandidates,
+} from '../../plugins/triggers';
+import {
   registerComposerFocus,
   registerComposerInsert,
   registerComposerInsertImage,
@@ -235,6 +240,8 @@ export function Composer({
   );
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [skillQuery, setSkillQuery] = useState<string | null>(null);
+  const [pluginQuery, setPluginQuery] = useState<string | null>(null);
+  const pluginItems = usePluginTriggerCandidates(pluginQuery, focusKey ?? null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [openFolderId, setOpenFolderId] = useState<MentionFolderId | null>(null);
   const [folderIndex, setFolderIndex] = useState(0);
@@ -267,6 +274,7 @@ export function Composer({
       });
       setSlashQuery(state.slashQuery);
       setSkillQuery(state.skillQuery);
+      setPluginQuery(state.pluginQuery);
     },
     [onActivate]
   );
@@ -335,7 +343,7 @@ export function Composer({
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset highlight when the filter token changes
   useEffect(() => {
     setActiveIndex(0);
-  }, [slashQuery, skillQuery, subQuery]);
+  }, [slashQuery, skillQuery, subQuery, pluginQuery]);
 
   useEffect(() => {
     const item = slashListRef.current?.children[activeIndex] as HTMLElement | undefined;
@@ -354,14 +362,29 @@ export function Composer({
     setMentionQuery(null);
   }, []);
 
+  const pickPlugin = useCallback(
+    (candidate: PluginCandidate) => {
+      setPluginQuery(null);
+      void pickPluginCandidate(candidate, focusKey ?? null).then((text) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        editor.consumeToken('#');
+        if (text) editor.insertText(text);
+      });
+    },
+    [focusKey]
+  );
+
   const popupKind =
     mentionQuery !== null && mentionItems.length > 0
       ? 'mention'
-      : slashResults.length > 0
-        ? 'slash'
-        : subResults.length > 0
-          ? 'slash-sub'
-          : null;
+      : pluginQuery !== null && pluginItems.length > 0
+        ? 'plugin'
+        : slashResults.length > 0
+          ? 'slash'
+          : subResults.length > 0
+            ? 'slash-sub'
+            : null;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: 光标移动、picker 挂载、flyout 打开都要重测宽高
   useLayoutEffect(() => {
@@ -392,9 +415,11 @@ export function Composer({
   const popupLength =
     popupKind === 'mention'
       ? mentionItems.length
-      : popupKind === 'slash-sub'
-        ? subResults.length
-        : slashResults.length;
+      : popupKind === 'plugin'
+        ? pluginItems.length
+        : popupKind === 'slash-sub'
+          ? subResults.length
+          : slashResults.length;
 
   const applySlashSubcommand = useCallback(
     (name: string, sendNow: boolean) => {
@@ -429,6 +454,9 @@ export function Composer({
         }
         const item = mentionItems[activeIndex];
         if (item?.type === 'item') pickMention(item.candidate);
+      } else if (popupKind === 'plugin') {
+        const item = pluginItems[activeIndex];
+        if (item) pickPlugin(item);
       } else if (popupKind === 'slash') {
         const item = slashResults[activeIndex];
         if (!item) return;
@@ -449,6 +477,8 @@ export function Composer({
       mentionGroups,
       mentionItems,
       pickMention,
+      pickPlugin,
+      pluginItems,
       popupKind,
       slashResults,
       skillQuery,
@@ -579,6 +609,7 @@ export function Composer({
         setMentionQuery(null);
         setSlashQuery(null);
         setSkillQuery(null);
+        setPluginQuery(null);
         setOpenFolderId(null);
         return;
       }
@@ -633,6 +664,38 @@ export function Composer({
           left={popupLayout.left}
           flyoutSide={popupLayout.flyoutSide}
         />
+      )}
+      {popupKind === 'plugin' && (
+        <div
+          ref={slashListRef}
+          role="listbox"
+          aria-label={t('Plugin suggestions')}
+          className="absolute bottom-full left-0 z-10 mb-1.5 max-h-64 w-full overflow-y-auto rounded-lg border bg-popover p-1 shadow-md"
+        >
+          {pluginItems.map((candidate, index) => (
+            <button
+              key={candidate.key}
+              type="button"
+              role="option"
+              aria-selected={index === activeIndex}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => pickPlugin(candidate)}
+              onMouseMove={() => setActiveIndex(index)}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs',
+                index === activeIndex && 'bg-foreground/10'
+              )}
+            >
+              <span className="shrink-0 font-mono text-muted-foreground">#</span>
+              <span className="shrink-0 font-medium">{candidate.item.label}</span>
+              {candidate.item.detail && (
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {candidate.item.detail}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
       )}
       {(popupKind === 'slash' || popupKind === 'slash-sub') && (
         <div

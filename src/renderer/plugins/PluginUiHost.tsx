@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useSessionsStore } from '@/stores/sessions';
 import { handleDraftRequest } from './draftBridge';
 import { createRendererDeps, loadPluginRenderer } from './loader';
+import { setPluginTriggers } from './triggers';
 
 /** 挂一次：启用插件的渲染模块在宿主页面加载，登记挂点；停用或变更时收回 */
 export function PluginUiHost() {
@@ -15,6 +16,15 @@ export function PluginUiHost() {
       handles = [];
       void window.electronAPI.extensionPlugins.list().then(async (list) => {
         if (mine !== generation) return;
+        setPluginTriggers(
+          list
+            .filter((plugin) => plugin.state === 'enabled')
+            .flatMap((plugin) =>
+              plugin.triggers
+                .filter((trigger) => trigger.symbol === '#')
+                .map((trigger) => ({ pluginId: plugin.id, name: trigger.name }))
+            )
+        );
         for (const plugin of list) {
           if (plugin.state !== 'enabled' || !plugin.renderer) continue;
           try {
@@ -42,6 +52,7 @@ export function PluginUiHost() {
       generation += 1;
       unsubscribe();
       unsubscribeDraft();
+      setPluginTriggers([]);
       for (const handle of handles) handle.dispose();
     };
   }, []);

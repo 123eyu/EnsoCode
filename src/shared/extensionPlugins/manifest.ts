@@ -14,7 +14,8 @@ export const EXTENSION_PLUGIN_PERMISSIONS = [
 ] as const;
 export type ExtensionPluginPermission = (typeof EXTENSION_PLUGIN_PERMISSIONS)[number];
 
-export const PLUGIN_TRIGGER_SYMBOLS = ['@', '#', '/'] as const;
+/** @ 与 / 归宿主（文件提及、命令），插件补全只占 # */
+export const PLUGIN_TRIGGER_SYMBOLS = ['#'] as const;
 export type PluginTriggerSymbol = (typeof PLUGIN_TRIGGER_SYMBOLS)[number];
 
 export interface PluginAgentToolContrib {

@@ -164,13 +164,15 @@ describe('parseExtensionPluginManifest', () => {
   });
 
   it('拒绝非法补全符号', () => {
-    expect(
-      errorsOf({
-        ...base(),
-        permissions: ['agent.tool', 'ui.slot'],
-        contributes: { ...base().contributes, triggers: [{ symbol: '$', name: 'demo' }] },
-      })
-    ).not.toEqual([]);
+    // @ 与 / 归宿主（文件提及、命令），插件只能用 #
+    for (const symbol of ['$', '@', '/'])
+      expect(
+        errorsOf({
+          ...base(),
+          permissions: ['agent.tool', 'ui.slot'],
+          contributes: { ...base().contributes, triggers: [{ symbol, name: 'demo' }] },
+        })
+      ).not.toEqual([]);
   });
 
   it('MCP env 只接受字符串字面量', () => {
