@@ -277,6 +277,7 @@ import { registerVirtualModel } from './virtualModels';
 import { createWorkflowTool, WORKFLOW_STOPPED_BY_USER } from './workflow';
 import { listWorkflowPresets, loadWorkflowPreset, workflowPresetRoots } from './workflowPresets';
 import { WorkspaceClaims, withExclusiveCommand, withFileClaims } from './workspaceClaims';
+import { WORKSPACE_POLICY_PROMPT } from './workspacePolicy';
 import { WorkspaceSwitchGate, workspaceBranchContextExtension } from './workspaceSwitch';
 import { withWritePreflight, withWriteScope } from './writeScope';
 
@@ -618,6 +619,7 @@ function createSessionResourceLoader(options: {
           ]
         : []),
       options.silentTurnRecovery,
+      appendSystemPromptExtension('workspace-policy', WORKSPACE_POLICY_PROMPT),
       ...(options.childContract
         ? [appendSystemPromptExtension('subagent-contract', SUBAGENT_CONTRACT_PROMPT)]
         : []),
