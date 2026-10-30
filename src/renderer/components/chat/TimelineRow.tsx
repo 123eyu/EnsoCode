@@ -99,6 +99,7 @@ import {
 import { useSettingsStore } from '@/stores/settings';
 import { useSubagentRunsStore } from '@/stores/subagentRuns';
 import { PluginMessageActions, PluginToolCardSlot } from '../../plugins/slots';
+import { ApprovalReviewBar } from './ApprovalReviewBar';
 import { AskUserResult } from './AskUserResult';
 import { CodeBlock } from './CodeBlock';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -196,6 +197,7 @@ function itemEqual(prev: TimelineRowProps, next: TimelineRowProps): boolean {
         a.nestedPending === b.nestedPending &&
         JSON.stringify(a.sandbox) === JSON.stringify(b.sandbox) &&
         a.rtk === b.rtk &&
+        a.approvalReview === b.approvalReview &&
         a.plan?.title === b.plan?.title &&
         a.plan?.text === b.plan?.text &&
         a.sentMessage === b.sentMessage &&
@@ -2075,6 +2077,7 @@ function ToolRow({ item }: { item: Extract<TimelineItem, { kind: 'tool' }> }) {
                 </>
               )}
               <RtkToolStatsBar value={item.rtk} />
+              <ApprovalReviewBar value={item.approvalReview} />
             </ToolContentScroller>
           )}
         </div>

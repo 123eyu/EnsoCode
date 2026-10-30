@@ -519,6 +519,7 @@ async function remoteDistillCompletion(
       candidates,
       timeoutMs: titleSummaryTimeoutMs(1),
       ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
 }
 
