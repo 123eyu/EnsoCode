@@ -569,6 +569,20 @@ describe('Main-owned source authority contracts', () => {
 });
 
 describe('parent/child commands', () => {
+  it('set-builtin-tools：父会话身份 + 工具 id 列表，脏值拒绝', () => {
+    const command = { type: 'set-builtin-tools', identity: parent, disabledTools: ['memory'] };
+    expect(parseAgentCommand(command)).toEqual(command);
+    expect(parseAgentCommand({ ...command, disabledTools: [] })).toEqual({
+      ...command,
+      disabledTools: [],
+    });
+    expect(parseAgentCommand({ ...command, disabledTools: 'memory' })).toBeNull();
+    expect(parseAgentCommand({ ...command, disabledTools: [1] })).toBeNull();
+    expect(parseAgentCommand({ ...command, disabledTools: ['x'.repeat(200)] })).toBeNull();
+    expect(parseAgentCommand({ ...command, extra: true })).toBeNull();
+    expect(parseAgentCommand({ ...command, identity: { sessionId: 'conversation-1' } })).toBeNull();
+  });
+
   it('rewind accepts an exclusive persisted entry anchor and rejects ambiguous or dirty anchors', () => {
     const command = { type: 'rewind', identity: parent, entryId: 'user-entry', restoreFiles: true };
     expect(parseAgentCommand(command)).toEqual(command);

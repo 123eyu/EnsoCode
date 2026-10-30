@@ -126,6 +126,7 @@ import {
   foregroundCommandTimeoutMs,
   withBackground,
 } from './backgroundTasks';
+import { enabledHotBuiltins, nextActiveToolNames } from './builtinLoadout';
 import { CheckpointManager, withCheckpoint } from './checkpoint/manager';
 import { createRemoteCheckpointHost } from './checkpoint/remoteHost';
 import {
@@ -392,6 +393,8 @@ interface ManagedSession {
   pendingRole?: string;
   /** 仅父会话：Plan 模式状态机（设置里关闭时缺省） */
   plan?: PlanController;
+  /** 父会话：按 Main 推来的禁用列表增删已注册的内置工具 */
+  applyBuiltinTools?: (disabled: readonly string[]) => void;
   /** 下一条 prompt 产生的 user 消息的投递回执；id 为 null 表示该投递无乐观回显 */
   promptDelivery?: { id: string | null };
   /** 已入 pi steer 队列、尚未上屏的投递回执，与 pi 队列同序 */
@@ -938,6 +941,11 @@ export class SessionSupervisor {
     this.deliverNotification(sessionId, text);
   });
   private readonly pendingNotifications: PendingNotificationStore;
+  /** spawn 尚未注册完就到达的内置工具开关，注册后补用 */
+  private readonly pendingBuiltinTools = new Map<
+    string,
+    { identity: SessionIdentity; disabled: string[] }
+  >();
   private readonly completeTextAborts = new Map<string, AbortController>();
   private readonly completeTextPendingAborts = new Set<string>();
   private readonly classifyAborts = new Map<string, AbortController>();
@@ -1322,6 +1330,18 @@ export class SessionSupervisor {
     }
     if (command.type === 'set-disabled-workflow-presets') {
       this.disabledWorkflowPresets = command.ids;
+      return;
+    }
+    if (command.type === 'set-builtin-tools') {
+      const managed = this.sessions.get(command.identity.sessionId);
+      if (managed?.applyBuiltinTools && isSameGeneration(managed.identity, command.identity)) {
+        managed.applyBuiltinTools(command.disabledTools);
+      } else if (!managed) {
+        this.pendingBuiltinTools.set(command.identity.sessionId, {
+          identity: command.identity,
+          disabled: command.disabledTools,
+        });
+      }
       return;
     }
     if (command.type === 'set-web-search-config') {
@@ -2664,36 +2684,38 @@ export class SessionSupervisor {
       trackWait: (toolCallId) => this.bgTasks.trackBlockingWait(sessionId, toolCallId),
     });
     const askManager = this.createAskManager(identity, gate.humanTimeoutMs);
+    // 可热切的内置工具始终注册；激活与否由 applyBuiltinTools 按当前设置决定
+    const builtinGroups = new Map<string, string[]>();
+    const builtin = (id: string, tools: Def[]): Def[] => {
+      builtinGroups.set(id, [...(builtinGroups.get(id) ?? []), ...tools.map((tool) => tool.name)]);
+      return tools;
+    };
     // 内嵌浏览器：页面活在 Main，worker 只发 browser-invoke 事件。每个父会话一张挂起表。
-    const browser = toolEnabled('browser')
-      ? new BrowserInvoker(identity, (request) => {
-          const managed = managedRef ?? this.sessions.get(sessionId);
-          if (!managed) throw new Error('Session is not ready for browser actions.');
-          this.options.emit({
-            type: 'browser-invoke',
-            identity: managed.identity,
-            seq: ++managed.seq,
-            requestId: request.requestId,
-            op: request.op,
-            params: request.params,
-          });
-        })
-      : undefined;
+    const browser = new BrowserInvoker(identity, (request) => {
+      const managed = managedRef ?? this.sessions.get(sessionId);
+      if (!managed) throw new Error('Session is not ready for browser actions.');
+      this.options.emit({
+        type: 'browser-invoke',
+        identity: managed.identity,
+        seq: ++managed.seq,
+        requestId: request.requestId,
+        op: request.op,
+        params: request.params,
+      });
+    });
     // 记忆库活在 Main（better-sqlite3），worker 只发 memory-invoke 事件，同 browser 桥。
-    const memory = toolEnabled('memory')
-      ? new MemoryInvoker(identity, (request) => {
-          const managed = managedRef ?? this.sessions.get(sessionId);
-          if (!managed) throw new Error('Session is not ready for memory actions.');
-          this.options.emit({
-            type: 'memory-invoke',
-            identity: managed.identity,
-            seq: ++managed.seq,
-            requestId: request.requestId,
-            op: request.op,
-            params: request.params,
-          });
-        })
-      : undefined;
+    const memory = new MemoryInvoker(identity, (request) => {
+      const managed = managedRef ?? this.sessions.get(sessionId);
+      if (!managed) throw new Error('Session is not ready for memory actions.');
+      this.options.emit({
+        type: 'memory-invoke',
+        identity: managed.identity,
+        seq: ++managed.seq,
+        requestId: request.requestId,
+        op: request.op,
+        params: request.params,
+      });
+    });
     const delegation = botMode
       ? new MemoryInvoker<DelegationOp>(identity, (request) => {
           const managed = managedRef ?? this.sessions.get(sessionId);
@@ -2712,42 +2734,42 @@ export class SessionSupervisor {
       customDir: this.options.workflowDir,
     });
     const workflowRuns = new Map<string, AbortController>();
-    const computer =
-      toolEnabled('computer') && !remote
-        ? new ComputerInvoker(
-            identity,
-            (request) => {
+    const computer = !remote
+      ? new ComputerInvoker(
+          identity,
+          (request) => {
+            const managed = managedRef ?? this.sessions.get(sessionId);
+            if (!managed) throw new Error('Session is not ready for computer actions.');
+            this.options.emit({
+              type: 'computer-invoke',
+              identity: managed.identity,
+              seq: ++managed.seq,
+              requestId: request.requestId,
+              op: request.op,
+              params: request.params,
+            });
+          },
+          {
+            emitCancel: (requestId) => {
               const managed = managedRef ?? this.sessions.get(sessionId);
-              if (!managed) throw new Error('Session is not ready for computer actions.');
+              if (!managed) return;
               this.options.emit({
-                type: 'computer-invoke',
+                type: 'computer-cancel',
                 identity: managed.identity,
                 seq: ++managed.seq,
-                requestId: request.requestId,
-                op: request.op,
-                params: request.params,
+                requestId,
               });
             },
-            {
-              emitCancel: (requestId) => {
-                const managed = managedRef ?? this.sessions.get(sessionId);
-                if (!managed) return;
-                this.options.emit({
-                  type: 'computer-cancel',
-                  identity: managed.identity,
-                  seq: ++managed.seq,
-                  requestId,
-                });
-              },
-            }
-          )
-        : undefined;
+          }
+        )
+      : undefined;
     const sessionTools = [
       ...buildCoreTools(),
-      ...(browser
-        ? createBrowserTools(browser).map((tool) => withNavigateApproval(gate, tool))
-        : []),
-      ...(memory ? createMemoryTools(memory, { language: memoryLanguage }) : []),
+      ...builtin(
+        'browser',
+        createBrowserTools(browser).map((tool) => withNavigateApproval(gate, tool))
+      ),
+      ...builtin('memory', createMemoryTools(memory, { language: memoryLanguage })),
       ...(delegation
         ? createDelegationTools(delegation, {
             groupTasks: botGroupTasks,
@@ -2763,38 +2785,37 @@ export class SessionSupervisor {
             createSendImageTool(delegation, cwd, confirmOutsideImage(gate)),
           ]
         : []),
-      ...(toolEnabled('web') ? createWebTools({ chain: () => this.webSearchChain }) : []),
-      ...(toolEnabled('todo') ? [createTodoTool((todos) => todoReminder.update(todos))] : []),
-      ...(computer ? [withComputerApproval(gate, createComputerTool(computer))] : []),
-      ...(toolEnabled('ask_user') ? [createAskTool(askManager)] : []),
-      ...(toolEnabled('subagent') ? [unifiedSubagentTool] : []),
-      ...(toolEnabled('workflow') && toolEnabled('subagent')
-        ? [
-            createWorkflowTool({
-              invoke: (request, signal) => agentControl.invoke(request, signal),
-              // 远程会话的 cwd 在远端，本地只读设置、全局与内置预设（与 Main 列表口径一致）
-              loadPreset: (id) =>
-                loadWorkflowPreset(id, workflowRoots, this.disabledWorkflowPresets),
-              presets: listWorkflowPresets(workflowRoots, this.disabledWorkflowPresets),
-              models: subagentModels,
-              agentTypes,
-              activeRuns: workflowRuns,
-              notify: (text, urgent) => this.notifier.notify(sessionId, text, { urgent }),
-              emit: (run) => {
-                const managed = managedRef ?? this.sessions.get(sessionId);
-                if (!managed) return;
-                this.options.emit({
-                  type: 'workflow-status',
-                  identity: managed.identity,
-                  seq: ++managed.seq,
-                  run,
-                });
-              },
-            }),
-          ]
+      ...builtin('web', createWebTools({ chain: () => this.webSearchChain })),
+      ...builtin('todo', [createTodoTool((todos) => todoReminder.update(todos))]),
+      ...(computer
+        ? builtin('computer', [withComputerApproval(gate, createComputerTool(computer))])
         : []),
+      ...builtin('ask_user', [createAskTool(askManager)]),
+      ...builtin('subagent', [unifiedSubagentTool]),
+      ...builtin('workflow', [
+        createWorkflowTool({
+          invoke: (request, signal) => agentControl.invoke(request, signal),
+          // 远程会话的 cwd 在远端，本地只读设置、全局与内置预设（与 Main 列表口径一致）
+          loadPreset: (id) => loadWorkflowPreset(id, workflowRoots, this.disabledWorkflowPresets),
+          presets: listWorkflowPresets(workflowRoots, this.disabledWorkflowPresets),
+          models: subagentModels,
+          agentTypes,
+          activeRuns: workflowRuns,
+          notify: (text, urgent) => this.notifier.notify(sessionId, text, { urgent }),
+          emit: (run) => {
+            const managed = managedRef ?? this.sessions.get(sessionId);
+            if (!managed) return;
+            this.options.emit({
+              type: 'workflow-status',
+              identity: managed.identity,
+              seq: ++managed.seq,
+              run,
+            });
+          },
+        }),
+      ]),
       ...(exploreFold ? createExploreFoldTools(exploreFold) : []),
-      ...(toolEnabled('background_tasks') ? createTaskTools(this.bgTasks, sessionId) : []),
+      ...builtin('background_tasks', createTaskTools(this.bgTasks, sessionId)),
       ...(toolEnabled('goal')
         ? createGoalTools((kind, note) => {
             const managed = managedRef ?? this.sessions.get(sessionId);
@@ -2819,13 +2840,11 @@ export class SessionSupervisor {
       agentTypes.filter((type) => type.tools === 'readonly').map((type) => type.name)
     );
     const planGated = (tools: Def[]): Def[] =>
-      toolEnabled('plan')
-        ? tools.map((tool) => withPlanGate(tool, { host: planHost, readonlyAgentTypes }))
-        : tools;
+      tools.map((tool) => withPlanGate(tool, { host: planHost, readonlyAgentTypes }));
     const customTools = decorateSessionTools(
       [
         ...planGated(sessionTools),
-        ...(toolEnabled('plan') ? [createSubmitPlanTool(planHost, randomUUID)] : []),
+        ...builtin('plan', [createSubmitPlanTool(planHost, randomUUID)]),
       ],
       { reminders, runaway, budget }
     );
@@ -2891,20 +2910,44 @@ export class SessionSupervisor {
     if (refusalRetryPrompt) managedRef.refusalRetryPrompt = refusalRetryPrompt;
     managedRef.browser = browser;
     managedRef.memory = memory;
-    if (toolEnabled('plan')) {
-      const managed = managedRef;
-      const plan = new PlanController(
-        {
-          branch: () => session.sessionManager.getBranch(),
-          append: (entry) => session.sessionManager.appendCustomEntry(PLAN_ENTRY_TYPE, entry),
-        },
-        () => this.emitPlanState(managed)
-      );
+    const managed = managedRef;
+    const plan = new PlanController(
+      {
+        branch: () => session.sessionManager.getBranch(),
+        append: (entry) => session.sessionManager.appendCustomEntry(PLAN_ENTRY_TYPE, entry),
+      },
+      () => this.emitPlanState(managed)
+    );
+    // 关掉 plan 时先退出 plan 模式，再撤掉控制器：工具门不再限制，set-plan-mode 不再生效
+    const setPlanEnabled = (enabled: boolean) => {
+      if (enabled === (managed.plan !== undefined)) return;
+      if (!enabled) {
+        if (plan.state().active) plan.setActive(false);
+        planRef.current = undefined;
+        managed.plan = undefined;
+        return;
+      }
       planRef.current = plan;
       managed.plan = plan;
-      if (planMode !== undefined) plan.setActive(planMode);
-      else this.emitPlanState(managed);
-    }
+      this.emitPlanState(managed);
+    };
+    managed.applyBuiltinTools = (disabled) => {
+      const enabled = enabledHotBuiltins(disabled);
+      const active = session.getActiveToolNames();
+      const next = nextActiveToolNames(active, builtinGroups, enabled);
+      if (next.length !== active.length || next.some((name, index) => name !== active[index])) {
+        session.setActiveToolsByName(next);
+      }
+      setPlanEnabled(enabled.has('plan'));
+    };
+    const pendingTools = this.pendingBuiltinTools.get(sessionId);
+    this.pendingBuiltinTools.delete(sessionId);
+    managed.applyBuiltinTools(
+      pendingTools && isSameGeneration(pendingTools.identity, identity)
+        ? pendingTools.disabled
+        : disabledTools
+    );
+    if (managed.plan && planMode !== undefined) plan.setActive(planMode);
     managedRef.computer = computer;
     managedRef.delegation = delegation;
     this.options.emit({

@@ -1288,6 +1288,8 @@ export type AgentCommand =
   | { type: 'set-auto-retry-limit'; limit: number }
   /** 设置里禁用的内置预设：worker 执行与工具说明都按它过滤 */
   | { type: 'set-disabled-workflow-presets'; ids: string[] }
+  /** 设置变更后 Main 按会话推送当前禁用的内置工具；worker 只增删已注册的可热切工具 */
+  | { type: 'set-builtin-tools'; identity: SessionIdentity; disabledTools: string[] }
   | { type: 'set-web-search-config'; chain: WebSearchChainEntry[]; configured?: boolean }
   /** 隐私脱敏配置：worker 全局生效，不重启会话 */
   | { type: 'set-privacy-masking'; settings: PrivacyMaskSettings }
@@ -3422,6 +3424,16 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
         Array.isArray(value.ids) &&
         value.ids.length <= 64 &&
         value.ids.every((id) => typeof id === 'string' && isWorkflowPresetId(id))
+        ? (value as unknown as AgentCommand)
+        : null;
+    case 'set-builtin-tools':
+      return hasExactKeys(value, ['type', 'identity', 'disabledTools']) &&
+        parseSessionIdentity(value.identity) &&
+        Array.isArray(value.disabledTools) &&
+        value.disabledTools.length <= 64 &&
+        value.disabledTools.every(
+          (id) => typeof id === 'string' && id.length > 0 && id.length <= 64
+        )
         ? (value as unknown as AgentCommand)
         : null;
     case 'set-model-directory':

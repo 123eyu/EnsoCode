@@ -111,6 +111,7 @@ import { ENSO_SYSTEM_PROMPT } from '../../agent/ensoPrompt';
 import { readSettings } from '../ipc/settings';
 import { agentCommandDispatch } from './agentCommandDispatch';
 import { type MemberAgentType, memberSpawnDescription } from './bots/botAgentType';
+import { BuiltinToolScopes, sessionDisabledTools } from './builtinToolScopes';
 import type { ResolvedPlugins } from './claudePlugins';
 import { isComputerPlatformSupported } from './computer/support';
 import { resolveGlobalInstruction } from './instructionStore';
@@ -697,6 +698,7 @@ function resolvePhysicalModelSelection(
 }
 
 const parentToolProfiles = new Map<string, ChildProfileToolOptions>();
+const builtinToolScopes = new BuiltinToolScopes();
 
 export interface AgentTypeProfileContext {
   parentSessionId?: string;
@@ -714,6 +716,7 @@ export function rememberParentToolProfile(
 
 export function forgetParentToolProfile(sessionId: string): void {
   parentToolProfiles.delete(sessionId);
+  builtinToolScopes.forget(sessionId);
 }
 
 export function expectedAgentTypeToolIds(
@@ -930,16 +933,14 @@ export function spawnSession(
   const agentTypes = options?.omitDispatchTools
     ? []
     : configuredAgentTypes(authenticatedAccountKeys, subagentModels.length > 0, plugins);
-  const disabledTools = resolveDisabledBuiltinTools(state?.disabledBuiltinTools, {
-    disabledBuiltinTools: projectDisabledBuiltinTools(state?.projects, projectId),
-  });
-  for (const id of options?.extraDisabledTools ?? []) {
-    if (!disabledTools.includes(id)) disabledTools.push(id);
-  }
-  // 当前平台不能操作桌面时不下发 computer，避免模型反复调用必失败的工具
-  if (!isComputerPlatformSupported() && !disabledTools.includes('computer')) {
-    disabledTools.push('computer');
-  }
+  // 当前平台不能操作桌面时禁用 computer，避免模型反复调用必失败的工具
+  const extraDisabledTools = options?.extraDisabledTools ?? [];
+  const disabledTools = sessionDisabledTools(
+    state,
+    projectId,
+    extraDisabledTools,
+    isComputerPlatformSupported()
+  );
   const loadHarnessAssets = state?.loadHarnessAssets === true;
   const trustedProjectCode = projectTrustedCode(state?.projects, projectId);
   const windowsLocalShell = parseWindowsLocalShell(state?.windowsLocalShell);
@@ -986,7 +987,8 @@ export function spawnSession(
     ...(smartCompactEnabled ? { smartCompactEnabled: true } : {}),
     ...(smartCompactSummaryModel ? { smartCompactSummaryModel } : {}),
     ...(smartCompactMode ? { smartCompactMode } : {}),
-    ...(disabledTools.includes('memory') ? {} : { memoryLanguage }),
+    // 记忆可在会话中途打开，语言始终下发
+    memoryLanguage,
     ...(skillPaths.length > 0 ? { skillPaths } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     ...(plugins.commands.length > 0 ? { pluginCommands: plugins.commands } : {}),
@@ -1012,6 +1014,7 @@ export function spawnSession(
     ...(options?.bot || state?.protectedActionsInCode === true ? { protectedActions: true } : {}),
   });
   if (sent.ok) {
+    builtinToolScopes.remember(identity, projectId, extraDisabledTools, disabledTools);
     rememberParentToolProfile(identity.sessionId, {
       editMode,
       shell: childProfileShell({
@@ -2008,6 +2011,17 @@ export function pushDisabledWorkflowPresets(): void {
     type: 'set-disabled-workflow-presets',
     ids: parseDisabledWorkflowPresets(readSettingsState()?.disabledWorkflowPresets),
   } satisfies AgentCommand);
+}
+
+/** 内置工具开关变化后推给已开的父会话；只推结果变了的会话 */
+export function pushBuiltinTools(): void {
+  if (!worker || !workerReady) return;
+  for (const change of builtinToolScopes.changes(
+    readSettingsState(),
+    isComputerPlatformSupported()
+  )) {
+    worker.postMessage({ type: 'set-builtin-tools', ...change } satisfies AgentCommand);
+  }
 }
 
 export function resolveWebSearchConfig(): { chain: WebSearchChainEntry[]; configured: boolean } {
