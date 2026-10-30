@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta
@@ -34,7 +34,7 @@
         const onInit = (event) => {
           const data = event.data;
           if (port || event.source !== window.parent || !data || data.type !== 'enso-view-init') return;
-          if (!event.ports || !event.ports[0]) return;
+          if (!event.ports?.[0]) return;
           window.removeEventListener('message', onInit);
           port = event.ports[0];
           theme = data.theme === 'dark' ? 'dark' : 'light';

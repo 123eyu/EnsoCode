@@ -3,14 +3,24 @@ import { PluginSlotView } from './loader';
 import { pluginBlock, pluginComposerSlots, pluginMessageActions, pluginToolCard } from './registry';
 import { usePluginSlotsVersion } from './usePluginSlots';
 
-export function PluginMessageActions({ position }: { position: 'left' | 'right' }) {
+export function PluginMessageActions({
+  position,
+  text,
+}: {
+  position: 'left' | 'right';
+  text: string;
+}) {
   usePluginSlotsVersion();
   const actions = pluginMessageActions(position);
   if (actions.length === 0) return null;
   return (
     <>
       {actions.map((entry) => (
-        <PluginSlotView key={`${entry.pluginId}:${position}`} entry={entry} props={{ position }} />
+        <PluginSlotView
+          key={`${entry.pluginId}:${position}`}
+          entry={entry}
+          props={{ position, text }}
+        />
       ))}
     </>
   );

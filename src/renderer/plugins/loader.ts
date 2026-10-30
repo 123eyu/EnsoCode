@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { type ComponentType, createElement, type ReactElement } from 'react';
 import { clearPluginSlots, type PluginSlotEntry, registerPluginSlot } from './registry';
 
@@ -26,7 +27,7 @@ async function importAssetModule(
 /** 渲染进程里的默认依赖：从 Main 取模块源码，调用经 extensionPlugins.call 回去 */
 export function createRendererDeps(sessionId: () => string | null): PluginRendererDeps {
   return {
-    react: { createElement },
+    react: React,
     sessionId,
     importModule: importAssetModule,
     call: async (pluginId, method, args, sid) => {

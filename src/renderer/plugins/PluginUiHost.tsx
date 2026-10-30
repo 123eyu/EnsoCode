@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useSessionsStore } from '@/stores/sessions';
+import { displayedConversationId } from '@/stores/sessions/chatChrome';
 import { handleDraftRequest } from './draftBridge';
 import { createRendererDeps, loadPluginRenderer } from './loader';
 import { setPluginTriggers } from './triggers';
@@ -8,7 +9,8 @@ import { setPluginViews } from './viewBridge';
 /** 挂一次：启用插件的渲染模块在宿主页面加载，登记挂点；停用或变更时收回 */
 export function PluginUiHost() {
   useEffect(() => {
-    const deps = createRendererDeps(() => useSessionsStore.getState().activeId ?? null);
+    // 与主输入框 focusKey 一致：子 Agent tab 打开时指向该 tab 的会话
+    const deps = createRendererDeps(() => displayedConversationId(useSessionsStore.getState()));
     let generation = 0;
     let handles: { dispose(): void }[] = [];
     const reload = () => {
