@@ -29,6 +29,8 @@ import {
 } from '../capabilities/types';
 import { type CompactStrategy, parseCompactStrategy } from '../compactStrategy';
 import type { DefaultModelRef } from '../defaultModel';
+import { parsePluginToolName } from '../extensionPlugins/toolName';
+import type { PluginToolDescriptor } from '../extensionPlugins/types';
 import { parseMaxActiveCoworkers } from '../maxActiveCoworkers';
 import {
   isCodexAccountKey,
@@ -1142,6 +1144,8 @@ export type AgentCommand =
       pluginCommands?: PluginCommandSpawn[];
       /** 已启用 Claude 插件的 command hooks；远程会话不下发 */
       pluginHooks?: PluginHookSpawn[];
+      /** 已启用 Enso 插件的 agent 工具；执行经 plugin-tool-invoke 回到 Main */
+      pluginTools?: PluginToolDescriptor[];
       instruction?: { path: string; content: string };
       approvalMode?: ApprovalMode;
       /** 助手代审模型；仅 approvalMode=assistant 时有意义 */
@@ -1333,6 +1337,14 @@ export type AgentCommand =
       error?: string;
     }
   | {
+      type: 'plugin-tool-result';
+      identity: SessionIdentity;
+      requestId: string;
+      ok: boolean;
+      result?: unknown;
+      error?: string;
+    }
+  | {
       type: 'rewind';
       identity: SessionIdentity;
       entryId?: string;
@@ -1404,6 +1416,17 @@ export type AgentCommand =
   /** 不可被闲置回收的会话全集（桌面正在查看 + 手机订阅中），每次全量覆盖 */
   | { type: 'pin-sessions'; sessionIds: string[] }
   | { type: 'warm-mcp'; servers: McpServerSpawnConfig[] }
+  /** 插件经 Main 列 / 调宿主 MCP 工具；服务配置由 Main 下发，凭据不经插件 */
+  | { type: 'plugin-mcp-list'; requestId: string; servers: McpServerSpawnConfig[] }
+  | {
+      type: 'plugin-mcp-call';
+      requestId: string;
+      servers: McpServerSpawnConfig[];
+      server: string;
+      tool: string;
+      args: Record<string, unknown>;
+    }
+  | { type: 'plugin-mcp-cancel'; requestId: string }
   /** 运行中同步代理 env；null 表示删除该键 */
   | { type: 'set-proxy-env'; env: Record<string, string | null> };
 
@@ -1654,6 +1677,7 @@ export type RendererAgentEvent =
       | ChildLifecycleEvent
       | McpWorkerEvent
       | WorkspaceLockEvent
+      | PluginMcpResultEvent
       | { type: 'oauth-pool-select' }
       | { type: 'privacy-mask-ledger' }
       | Extract<
@@ -1663,7 +1687,9 @@ export type RendererAgentEvent =
               | 'agent-control-invoke'
               | 'agent-control-cancel'
               | 'computer-invoke'
-              | 'computer-cancel';
+              | 'computer-cancel'
+              | 'plugin-tool-invoke'
+              | 'plugin-tool-cancel';
           }
         >
       | { type: 'session-reloaded' }
@@ -1679,6 +1705,10 @@ export type WorkspaceLockEvent =
   | { type: 'workspace-lock-result'; requestId: string; ok: boolean; error?: string }
   | { type: 'workspace-unlock-result'; requestId: string; ok: boolean; error?: string };
 
+export type PluginMcpResultEvent =
+  | { type: 'plugin-mcp-result'; requestId: string; ok: true; value: unknown }
+  | { type: 'plugin-mcp-result'; requestId: string; ok: false; error: string };
+
 export type AgentWorkerEvent =
   /** 会话外（辅助补全 / compaction）的脱敏记录，Main 写 ledger */
   | { type: 'privacy-mask-ledger'; record: PrivacyMaskRecord }
@@ -1691,6 +1721,7 @@ export type AgentWorkerEvent =
       excludedAccountKeys?: string[];
     }
   | WorkspaceLockEvent
+  | PluginMcpResultEvent
   | ParentLifecycleEvent
   | ChildLifecycleEvent
   | {
@@ -1899,6 +1930,15 @@ export type AgentWorkerEvent =
       seq: number;
       requestId: string;
     }
+  | {
+      type: 'plugin-tool-invoke';
+      identity: SessionIdentity;
+      seq: number;
+      requestId: string;
+      toolName: string;
+      args: unknown;
+    }
+  | { type: 'plugin-tool-cancel'; identity: SessionIdentity; seq: number; requestId: string }
   | { type: 'task-started'; identity: SessionIdentity; seq: number; task: BackgroundTaskInfo }
   | {
       /** 标题总结完成：无 identity/seq（不属于任何 worker 会话），渲染层按 conversationId 写回 */
@@ -2002,6 +2042,26 @@ const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[])
 
 const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length && hasOnlyKeys(value, keys);
+
+function isPluginToolList(value: unknown): value is PluginToolDescriptor[] {
+  if (!Array.isArray(value) || value.length > 200) return false;
+  const names = new Set<string>();
+  for (const tool of value) {
+    if (
+      !isRecord(tool) ||
+      !hasExactKeys(tool, ['name', 'description', 'parameters', 'pluginId']) ||
+      typeof tool.name !== 'string' ||
+      typeof tool.description !== 'string' ||
+      tool.description.length > 1024 ||
+      !isRecord(tool.parameters) ||
+      parsePluginToolName(tool.name)?.pluginId !== tool.pluginId ||
+      names.has(tool.name)
+    )
+      return false;
+    names.add(tool.name);
+  }
+  return true;
+}
 
 const isMcpScopeChallenge = (value: unknown): value is McpScopeChallenge =>
   isRecord(value) &&
@@ -3061,6 +3121,7 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
           'skillPaths',
           'mcpServers',
           'pluginCommands',
+          'pluginTools',
           'pluginHooks',
           'instruction',
           'approvalMode',
@@ -3102,6 +3163,7 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
           )) ||
         (value.pluginCommands !== undefined &&
           parsePluginCommands(value.pluginCommands) === null) ||
+        (value.pluginTools !== undefined && !isPluginToolList(value.pluginTools)) ||
         (value.pluginHooks !== undefined && parsePluginHooks(value.pluginHooks) === null) ||
         (value.rtkEnabled !== undefined && typeof value.rtkEnabled !== 'boolean') ||
         (value.planMode !== undefined && typeof value.planMode !== 'boolean') ||
@@ -3458,7 +3520,8 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
     case 'browser-result':
     case 'memory-result':
     case 'delegation-result':
-    case 'computer-result': {
+    case 'computer-result':
+    case 'plugin-tool-result': {
       if (
         !hasOnlyKeys(value, ['type', 'identity', 'requestId', 'ok', 'result', 'error']) ||
         !parseAnySessionIdentity(value.identity) ||
@@ -3573,6 +3636,25 @@ export function parseAgentCommand(value: unknown): AgentCommand | null {
       return hasExactKeys(value, ['type', 'servers']) && Array.isArray(value.servers)
         ? (value as unknown as AgentCommand)
         : null;
+    case 'plugin-mcp-list':
+      return hasExactKeys(value, ['type', 'requestId', 'servers']) &&
+        isNonEmptyString(value.requestId) &&
+        Array.isArray(value.servers)
+        ? (value as unknown as AgentCommand)
+        : null;
+    case 'plugin-mcp-call':
+      return hasExactKeys(value, ['type', 'requestId', 'servers', 'server', 'tool', 'args']) &&
+        isNonEmptyString(value.requestId) &&
+        Array.isArray(value.servers) &&
+        isNonEmptyString(value.server) &&
+        isNonEmptyString(value.tool) &&
+        isRecord(value.args)
+        ? (value as unknown as AgentCommand)
+        : null;
+    case 'plugin-mcp-cancel':
+      return hasExactKeys(value, ['type', 'requestId']) && isNonEmptyString(value.requestId)
+        ? { type: 'plugin-mcp-cancel', requestId: value.requestId }
+        : null;
     case 'set-proxy-env': {
       if (!hasExactKeys(value, ['type', 'env']) || !isRecord(value.env)) return null;
       for (const entry of Object.values(value.env)) {
@@ -3678,6 +3760,18 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
       (value.ok === true
         ? value.error === undefined
         : value.ok === false && isNonEmptyString(value.error))
+      ? (value as unknown as AgentWorkerEvent)
+      : null;
+  }
+  if (value.type === 'plugin-mcp-result') {
+    if (!isNonEmptyString(value.requestId)) return null;
+    if (value.ok === true)
+      return hasExactKeys(value, ['type', 'requestId', 'ok', 'value'])
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    return value.ok === false &&
+      hasExactKeys(value, ['type', 'requestId', 'ok', 'error']) &&
+      isNonEmptyString(value.error)
       ? (value as unknown as AgentWorkerEvent)
       : null;
   }
@@ -3847,6 +3941,18 @@ export function parseAgentWorkerEvent(value: unknown): AgentWorkerEvent | null {
         ? (value as unknown as AgentWorkerEvent)
         : null;
     case 'computer-cancel':
+      return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId']) &&
+        isNonEmptyString(value.requestId)
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    case 'plugin-tool-invoke':
+      return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId', 'toolName', 'args']) &&
+        isNonEmptyString(value.requestId) &&
+        typeof value.toolName === 'string' &&
+        parsePluginToolName(value.toolName) !== null
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    case 'plugin-tool-cancel':
       return hasExactKeys(value, ['type', 'identity', 'seq', 'requestId']) &&
         isNonEmptyString(value.requestId)
         ? (value as unknown as AgentWorkerEvent)
