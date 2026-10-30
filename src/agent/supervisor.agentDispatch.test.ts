@@ -360,6 +360,45 @@ describe('SessionSupervisor deterministic child lifecycle', () => {
     await supervisor.shutdown();
   });
 
+  it('内置工具热开关：回合进行中只攒着，回合收口后才换工具表，避免回合中途缓存失效', async () => {
+    const events: AgentWorkerEvent[] = [];
+    const supervisor = new SessionSupervisor({
+      emit: (event) => events.push(event),
+      agentDir: '/tmp/agent',
+      sessionDir: mkdtempSync(path.join(tmpdir(), 'enso-dispatch-hot-busy-')),
+    });
+    supervisor.handleCommand({ type: 'spawn-parent', identity: parent, cwd: '/w', model });
+    await waitFor(events, 'parent-ready');
+    const live = mocks.sessions.at(-1) as ReturnType<typeof session> & {
+      isStreaming?: boolean;
+      getActiveToolNames(): string[];
+    };
+    expect(live.getActiveToolNames()).toContain('web_search');
+
+    live.isStreaming = true;
+    live.emit({ type: 'agent_start' });
+    supervisor.handleCommand({
+      type: 'set-builtin-tools',
+      identity: parent,
+      disabledTools: ['web'],
+    });
+    supervisor.handleCommand({
+      type: 'set-builtin-tools',
+      identity: parent,
+      disabledTools: ['todo'],
+    });
+    expect(live.getActiveToolNames()).toContain('web_search');
+    expect(live.getActiveToolNames()).toContain('todo');
+
+    live.isStreaming = false;
+    live.emit({ type: 'agent_end', messages: [] });
+    live.emit({ type: 'agent_settled' });
+    // 只应用最后一次推送
+    expect(live.getActiveToolNames()).toContain('web_search');
+    expect(live.getActiveToolNames()).not.toContain('todo');
+    await supervisor.shutdown();
+  });
+
   it('按需 MCP 不在 spawn 与预热时连接，首次 codemode 调用才注册为 deferred 并按真实工具名审批', async () => {
     const events: AgentWorkerEvent[] = [];
     const direct = { id: 'd', name: 'direct', transport: 'stdio' as const, command: 'd' };

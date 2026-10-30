@@ -395,6 +395,8 @@ interface ManagedSession {
   plan?: PlanController;
   /** 父会话：按 Main 推来的禁用列表增删已注册的内置工具 */
   applyBuiltinTools?: (disabled: readonly string[]) => void;
+  /** 回合进行中到达的禁用列表：换工具表会让前缀缓存失效，留到回合收口再应用 */
+  pendingBuiltinTools?: readonly string[];
   /** 下一条 prompt 产生的 user 消息的投递回执；id 为 null 表示该投递无乐观回显 */
   promptDelivery?: { id: string | null };
   /** 已入 pi steer 队列、尚未上屏的投递回执，与 pi 队列同序 */
@@ -1335,7 +1337,8 @@ export class SessionSupervisor {
     if (command.type === 'set-builtin-tools') {
       const managed = this.sessions.get(command.identity.sessionId);
       if (managed?.applyBuiltinTools && isSameGeneration(managed.identity, command.identity)) {
-        managed.applyBuiltinTools(command.disabledTools);
+        managed.pendingBuiltinTools = command.disabledTools;
+        this.flushPendingBuiltinTools(managed);
       } else if (!managed) {
         this.pendingBuiltinTools.set(command.identity.sessionId, {
           identity: command.identity,
@@ -3684,6 +3687,13 @@ export class SessionSupervisor {
     plug.adopt(tools);
   }
 
+  private flushPendingBuiltinTools(managed: ManagedSession): void {
+    const disabled = managed.pendingBuiltinTools;
+    if (!disabled || !managed.applyBuiltinTools || !this.sessionAcceptsMcpTools(managed)) return;
+    managed.pendingBuiltinTools = undefined;
+    managed.applyBuiltinTools(disabled);
+  }
+
   private installAdoptedMcpTools(
     host: CodemodeHost,
     sessionId: string,
@@ -4009,6 +4019,7 @@ export class SessionSupervisor {
     managed.requestBudget?.disarm();
     managed.status = 'idle';
     this.emitStatus(managed);
+    this.flushPendingBuiltinTools(managed);
     managed.plan?.turnSettled();
     managed.contextUsage.setPendingSnapshot(undefined);
     this.emitSessionMeta(managed);
@@ -4280,6 +4291,7 @@ export class SessionSupervisor {
     deliveryId?: string
   ): void {
     this.flushPendingMcpTools(managed);
+    this.flushPendingBuiltinTools(managed);
     if (managed.session.isStreaming) {
       void this.steerTracked(managed, text, images, deliveryId).catch((error) => {
         this.failTurn(managed, toErrorMessage(error));
@@ -4431,6 +4443,7 @@ export class SessionSupervisor {
     managed.requestBudget?.disarm();
     managed.contextUsage.setPendingSnapshot(undefined);
     managed.status = 'failed';
+    this.flushPendingBuiltinTools(managed);
     // 失败轮不总结，但下一轮的起点仍要往前推，否则失败轮的消息会混进下一轮摘要
     managed.turnStartIndex = managed.messages.length;
     // 轮失败时放弃排队压缩（通常是 queued；running 压缩与 failTurn 时序上不可达）
