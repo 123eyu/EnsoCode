@@ -4,7 +4,7 @@ import { ipcMain } from '@platform';
 import type { ExtensionPluginInstallPreview } from '@shared/extensionPlugins/types';
 import { IPC_CHANNELS } from '@shared/types';
 import { getExtensionPlugins } from '../services/extensionPlugins';
-import { sendToAllWindows } from '../windows/createAppWindow';
+import { broadcastToRenderers } from '../services/renderers';
 import { pluginProjectRoot } from './agent';
 
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
@@ -40,7 +40,7 @@ export function registerExtensionPluginHandlers(): void {
   const plugins = () => getExtensionPlugins();
   if (!wired) {
     wired = true;
-    plugins().onChange(() => sendToAllWindows(IPC_CHANNELS.EXTENSION_PLUGINS_CHANGED));
+    plugins().onChange(() => broadcastToRenderers(IPC_CHANNELS.EXTENSION_PLUGINS_CHANGED));
   }
 
   ipcMain.handle(IPC_CHANNELS.EXTENSION_PLUGINS_LIST, () => plugins().list());
